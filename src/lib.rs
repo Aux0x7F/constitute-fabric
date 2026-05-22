@@ -8,8 +8,8 @@ use constitute_protocol::{
     FABRIC_MEMBER_CONTRIBUTION_RELEASED, FABRIC_MEMBER_CONTRIBUTION_RUNNING,
     FABRIC_MEMBER_CONTRIBUTION_SUPERSEDED, HostFabricFulfillmentPlan, HostFabricMemberContribution,
     LifecyclePlanPosture, RECORD_HOST_FABRIC_FULFILLMENT_PLAN,
-    validate_host_fabric_fulfillment_plan, validate_host_fabric_member_contribution,
-    validate_lifecycle_plan_posture,
+    RECORD_HOST_FABRIC_MEMBER_CONTRIBUTION, ResourcePosture, validate_host_fabric_fulfillment_plan,
+    validate_host_fabric_member_contribution, validate_lifecycle_plan_posture,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -61,6 +61,41 @@ pub struct HostFabricReduction {
     pub filtered_contribution_refs: Vec<String>,
     pub lifecycle_plan_refs: Vec<String>,
     pub blocked_reasons: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostFabricMemberContributionSpec {
+    pub contribution_id: String,
+    pub fabric_ref: String,
+    pub host_ref: String,
+    pub member_ref: String,
+    pub role: String,
+    pub state: String,
+    pub contract_ref: String,
+    pub subject_ref: String,
+    #[serde(default)]
+    pub capability_refs: Vec<String>,
+    #[serde(default)]
+    pub grant_refs: Vec<String>,
+    #[serde(default)]
+    pub input_refs: Vec<String>,
+    #[serde(default)]
+    pub output_refs: Vec<String>,
+    #[serde(default)]
+    pub evidence_refs: Vec<String>,
+    #[serde(default)]
+    pub lifecycle_plan_refs: Vec<String>,
+    #[serde(default)]
+    pub release_refs: Vec<String>,
+    #[serde(default)]
+    pub resource_posture: Option<ResourcePosture>,
+    #[serde(default)]
+    pub blocked_reasons: Vec<String>,
+    #[serde(default)]
+    pub safe_facts: serde_json::Value,
+    pub observed_at: u64,
+    pub expires_at: Option<u64>,
 }
 
 fn one() -> usize {
@@ -243,6 +278,44 @@ pub fn reduce_host_fabric(input: HostFabricReductionInput) -> Result<HostFabricR
     })
 }
 
+pub fn build_host_fabric_member_contribution(
+    spec: HostFabricMemberContributionSpec,
+) -> Result<HostFabricMemberContribution> {
+    require_ref(&spec.contribution_id, "contributionId")?;
+    require_ref(&spec.fabric_ref, "fabricRef")?;
+    require_ref(&spec.host_ref, "hostRef")?;
+    require_ref(&spec.member_ref, "memberRef")?;
+    require_ref(&spec.role, "role")?;
+    require_ref(&spec.state, "state")?;
+    require_ref(&spec.contract_ref, "contractRef")?;
+    require_ref(&spec.subject_ref, "subjectRef")?;
+    let contribution = HostFabricMemberContribution {
+        kind: Some(RECORD_HOST_FABRIC_MEMBER_CONTRIBUTION.to_string()),
+        contribution_id: spec.contribution_id,
+        fabric_ref: spec.fabric_ref,
+        host_ref: spec.host_ref,
+        member_ref: spec.member_ref,
+        role: spec.role,
+        state: spec.state,
+        contract_ref: spec.contract_ref,
+        subject_ref: spec.subject_ref,
+        capability_refs: normalize_refs(spec.capability_refs),
+        grant_refs: normalize_refs(spec.grant_refs),
+        input_refs: normalize_refs(spec.input_refs),
+        output_refs: normalize_refs(spec.output_refs),
+        evidence_refs: normalize_refs(spec.evidence_refs),
+        lifecycle_plan_refs: normalize_refs(spec.lifecycle_plan_refs),
+        release_refs: normalize_refs(spec.release_refs),
+        resource_posture: spec.resource_posture,
+        blocked_reasons: normalize_refs(spec.blocked_reasons),
+        safe_facts: spec.safe_facts,
+        observed_at: spec.observed_at,
+        expires_at: spec.expires_at,
+    };
+    validate_host_fabric_member_contribution(&contribution)?;
+    Ok(contribution)
+}
+
 fn require_ref(value: &str, label: &str) -> Result<()> {
     if value.trim().is_empty() {
         Err(anyhow!("host fabric reduction missing {label}"))
@@ -299,8 +372,10 @@ mod tests {
     use constitute_protocol::{
         FABRIC_LIFECYCLE_PHASE_OBSERVE, FABRIC_LIFECYCLE_PHASE_READY, FABRIC_LIFECYCLE_PHASE_RUN,
         FABRIC_LIFECYCLE_PHASE_RUNNING, FABRIC_LIFECYCLE_PLAN_READY,
-        FABRIC_MEMBER_ROLE_HOST_SERVICE_ADAPTER, LifecyclePhasePosture,
-        RECORD_HOST_FABRIC_MEMBER_CONTRIBUTION, RECORD_LIFECYCLE_PLAN_POSTURE,
+        FABRIC_MEMBER_ROLE_BUILD_PROCESSOR, FABRIC_MEMBER_ROLE_DOMAIN_SERVICE,
+        FABRIC_MEMBER_ROLE_GATEWAY_ASSOCIATION, FABRIC_MEMBER_ROLE_HOST_SERVICE_ADAPTER,
+        FABRIC_MEMBER_ROLE_PLATFORM_ADAPTER, FABRIC_MEMBER_ROLE_RUNTIME,
+        FABRIC_MEMBER_ROLE_SURFACE, LifecyclePhasePosture, RECORD_LIFECYCLE_PLAN_POSTURE,
     };
 
     const MEMBER_REF: &str = "4a29ff60c5c3837e9e20555bfeb2a046be3eb140818144628691fcf7efb1d2f1";
@@ -311,33 +386,49 @@ mod tests {
         fabric_ref: &str,
         host_ref: &str,
     ) -> HostFabricMemberContribution {
-        HostFabricMemberContribution {
-            kind: Some(RECORD_HOST_FABRIC_MEMBER_CONTRIBUTION.to_string()),
+        contribution_for_role(
+            id,
+            FABRIC_MEMBER_ROLE_HOST_SERVICE_ADAPTER,
+            state,
+            fabric_ref,
+            host_ref,
+        )
+    }
+
+    fn contribution_for_role(
+        id: &str,
+        role: &str,
+        state: &str,
+        fabric_ref: &str,
+        host_ref: &str,
+    ) -> HostFabricMemberContribution {
+        build_host_fabric_member_contribution(HostFabricMemberContributionSpec {
             contribution_id: id.to_string(),
             fabric_ref: fabric_ref.to_string(),
             host_ref: host_ref.to_string(),
             member_ref: MEMBER_REF.to_string(),
-            role: FABRIC_MEMBER_ROLE_HOST_SERVICE_ADAPTER.to_string(),
+            role: role.to_string(),
             state: state.to_string(),
-            contract_ref: "contract:host-service-adapter.service-manager@0.1.0".to_string(),
-            subject_ref: "service:lab-managed".to_string(),
-            capability_refs: vec!["capability:host-service:start".to_string()],
-            grant_refs: vec!["grant:service-manager:lab-service".to_string()],
+            contract_ref: format!("contract:{role}.test@0.1.0"),
+            subject_ref: format!("subject:{role}:test"),
+            capability_refs: vec![format!("capability:{role}:fulfill")],
+            grant_refs: vec![format!("grant:{role}:test")],
             input_refs: vec!["contract-target:desktop-dev:msa-transition".to_string()],
-            output_refs: vec!["service:lab-managed".to_string()],
+            output_refs: vec![format!("output:{role}:test")],
             evidence_refs: vec![format!("evidence:{id}")],
-            lifecycle_plan_refs: vec!["lifecycle-plan:lab-service:start".to_string()],
+            lifecycle_plan_refs: vec![format!("lifecycle-plan:{role}:test")],
             release_refs: vec![],
             resource_posture: None,
             blocked_reasons: if state == FABRIC_MEMBER_CONTRIBUTION_BLOCKED {
-                vec!["host-service-adapter:blocked".to_string()]
+                vec![format!("{role}:blocked")]
             } else {
                 vec![]
             },
             safe_facts: json!({ "fixture": id }),
             observed_at: 1_700_000_000,
             expires_at: Some(1_700_003_600),
-        }
+        })
+        .expect("contribution validates")
     }
 
     fn lifecycle(state: &str) -> LifecyclePlanPosture {
@@ -490,6 +581,75 @@ mod tests {
         assert_eq!(
             reduction.fulfillment_plan.member_contribution_refs,
             vec!["fabric-contribution:service-manager"]
+        );
+    }
+
+    #[test]
+    fn reduces_dependency_knot_roles_without_execution_semantics() {
+        let roles = [
+            FABRIC_MEMBER_ROLE_GATEWAY_ASSOCIATION,
+            FABRIC_MEMBER_ROLE_HOST_SERVICE_ADAPTER,
+            FABRIC_MEMBER_ROLE_BUILD_PROCESSOR,
+            FABRIC_MEMBER_ROLE_RUNTIME,
+            FABRIC_MEMBER_ROLE_SURFACE,
+            FABRIC_MEMBER_ROLE_PLATFORM_ADAPTER,
+            FABRIC_MEMBER_ROLE_DOMAIN_SERVICE,
+        ];
+        let contributions = roles
+            .iter()
+            .map(|role| {
+                contribution_for_role(
+                    &format!("fabric-contribution:{role}"),
+                    role,
+                    FABRIC_MEMBER_CONTRIBUTION_RUNNING,
+                    "fabric:lab-gateway",
+                    "host:lab-service-manager",
+                )
+            })
+            .collect::<Vec<_>>();
+        let reduction = reduce_host_fabric(HostFabricReductionInput {
+            plan_id: "fabric-plan:dependency-knot".to_string(),
+            fabric_ref: "fabric:lab-gateway".to_string(),
+            host_ref: "host:lab-service-manager".to_string(),
+            contract_ref: "contract:host-fabric.dependency-knot@0.1.0".to_string(),
+            required_roles: roles
+                .iter()
+                .map(|role| HostFabricRoleRequirement {
+                    role_ref: role_ref(role),
+                    min_ready: 1,
+                })
+                .collect(),
+            contributions,
+            lifecycle_plans: vec![lifecycle(FABRIC_LIFECYCLE_PLAN_READY)],
+            materialization_budget_refs: vec!["materialization-budget:dependency-knot".to_string()],
+            known_missing_role_refs: vec![],
+            evidence_refs: vec!["evidence:dependency-knot:fixture".to_string()],
+            blocked_reasons: vec![],
+            association_handoff_ref: Some(
+                "handoff:substrate:lab-gateway:initial-owner".to_string(),
+            ),
+            observed_at: 1_700_000_000,
+            expires_at: Some(1_700_003_600),
+        })
+        .expect("reduction");
+
+        assert_eq!(
+            reduction.fulfillment_plan.state,
+            FABRIC_FULFILLMENT_PLAN_READY
+        );
+        assert_eq!(
+            reduction.fulfillment_plan.required_role_refs.len(),
+            roles.len()
+        );
+        assert_eq!(
+            reduction.fulfillment_plan.member_contribution_refs.len(),
+            roles.len()
+        );
+        assert!(
+            reduction.fulfillment_plan.safe_facts["readyContributionCount"]
+                .as_u64()
+                .unwrap()
+                >= roles.len() as u64
         );
     }
 }
