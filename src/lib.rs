@@ -1,15 +1,23 @@
 use anyhow::{Result, anyhow};
 use constitute_protocol::{
+    ContractTarget, ContractTargetRegistryPosture, ContractTargetSlotPosture,
+    FABRIC_CONTRACT_TARGET_PLATFORM_FIT_COMPATIBLE, FABRIC_CONTRACT_TARGET_PLATFORM_FIT_UNKNOWN,
+    FABRIC_CONTRACT_TARGET_REGISTRY_BLOCKED, FABRIC_CONTRACT_TARGET_REGISTRY_READY,
+    FABRIC_CONTRACT_TARGET_SLOT_AVAILABLE, FABRIC_CONTRACT_TARGET_SLOT_MISSING,
     FABRIC_FULFILLMENT_PLAN_BLOCKED, FABRIC_FULFILLMENT_PLAN_DEGRADED,
     FABRIC_FULFILLMENT_PLAN_READY, FABRIC_LIFECYCLE_PLAN_BLOCKED, FABRIC_LIFECYCLE_PLAN_DEGRADED,
     FABRIC_LIFECYCLE_PLAN_EXPIRED, FABRIC_MEMBER_CONTRIBUTION_ACCEPTED,
     FABRIC_MEMBER_CONTRIBUTION_BLOCKED, FABRIC_MEMBER_CONTRIBUTION_CLAIMED,
     FABRIC_MEMBER_CONTRIBUTION_DEGRADED, FABRIC_MEMBER_CONTRIBUTION_EXPIRED,
     FABRIC_MEMBER_CONTRIBUTION_RELEASED, FABRIC_MEMBER_CONTRIBUTION_RUNNING,
-    FABRIC_MEMBER_CONTRIBUTION_SUPERSEDED, HostFabricFulfillmentPlan, HostFabricMemberContribution,
-    LifecyclePlanPosture, RECORD_HOST_FABRIC_FULFILLMENT_PLAN,
-    RECORD_HOST_FABRIC_MEMBER_CONTRIBUTION, ResourcePosture, validate_host_fabric_fulfillment_plan,
-    validate_host_fabric_member_contribution, validate_lifecycle_plan_posture,
+    FABRIC_MEMBER_CONTRIBUTION_SUPERSEDED, FABRIC_MEMBER_ROLE_DOMAIN_SERVICE,
+    FABRIC_MEMBER_ROLE_GATEWAY_ASSOCIATION, FABRIC_MEMBER_ROLE_PLATFORM_ADAPTER,
+    FABRIC_MEMBER_ROLE_RUNTIME, FABRIC_MEMBER_ROLE_SERVICE_EDGE_ADAPTER, HostFabricFulfillmentPlan,
+    HostFabricMemberContribution, LifecyclePlanPosture, RECORD_CONTRACT_TARGET_REGISTRY_POSTURE,
+    RECORD_HOST_FABRIC_FULFILLMENT_PLAN, RECORD_HOST_FABRIC_MEMBER_CONTRIBUTION, ResourcePosture,
+    validate_contract_target, validate_contract_target_registry_posture,
+    validate_host_fabric_fulfillment_plan, validate_host_fabric_member_contribution,
+    validate_lifecycle_plan_posture,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -115,6 +123,262 @@ pub struct HostFabricMemberContributionSpec {
     pub safe_facts: serde_json::Value,
     pub observed_at: u64,
     pub expires_at: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractTargetRegistryReductionInput {
+    pub plan_id: String,
+    pub fabric_ref: String,
+    pub host_ref: String,
+    pub contract_ref: String,
+    pub target: ContractTarget,
+    #[serde(default)]
+    pub contributions: Vec<HostFabricMemberContribution>,
+    #[serde(default)]
+    pub lifecycle_plans: Vec<LifecyclePlanPosture>,
+    #[serde(default)]
+    pub materialization_budget_refs: Vec<String>,
+    pub association_handoff_ref: Option<String>,
+    pub observed_at: u64,
+    pub expires_at: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractTargetRegistryReduction {
+    pub registry: ContractTargetRegistryPosture,
+    pub fulfillment_plan: HostFabricFulfillmentPlan,
+    pub selected_gateway_ref: Option<String>,
+    pub candidate_gateway_refs: Vec<String>,
+}
+
+pub fn reduce_contract_target_registry_from_fabric(
+    input: ContractTargetRegistryReductionInput,
+) -> Result<ContractTargetRegistryReduction> {
+    validate_contract_target(&input.target)?;
+    let slot_specs = [
+        (
+            "slot:gateway-association",
+            FABRIC_MEMBER_ROLE_GATEWAY_ASSOCIATION,
+        ),
+        (
+            "slot:service-edge-adapter",
+            FABRIC_MEMBER_ROLE_SERVICE_EDGE_ADAPTER,
+        ),
+        ("slot:platform-adapter", FABRIC_MEMBER_ROLE_PLATFORM_ADAPTER),
+        ("slot:runtime", FABRIC_MEMBER_ROLE_RUNTIME),
+        ("slot:nvr-service", FABRIC_MEMBER_ROLE_DOMAIN_SERVICE),
+    ];
+    let mut slot_postures = Vec::new();
+    let mut candidate_fulfillment_refs = Vec::new();
+    let mut blocked_reasons = BTreeSet::new();
+
+    for (slot_ref, role) in slot_specs {
+        let candidates = contribution_outputs_for_role(&input.contributions, role);
+        let evidence_refs = contribution_evidence_for_role(&input.contributions, role);
+        let slot_blockers = if candidates.is_empty() {
+            vec![format!("targetSlot:missing:{slot_ref}")]
+        } else {
+            Vec::new()
+        };
+        blocked_reasons.extend(slot_blockers.iter().cloned());
+        candidate_fulfillment_refs.extend(candidates.clone());
+        slot_postures.push(ContractTargetSlotPosture {
+            slot_ref: slot_ref.to_string(),
+            state: if candidates.is_empty() {
+                FABRIC_CONTRACT_TARGET_SLOT_MISSING
+            } else {
+                FABRIC_CONTRACT_TARGET_SLOT_AVAILABLE
+            }
+            .to_string(),
+            platform_fit_state: if candidates.is_empty() {
+                FABRIC_CONTRACT_TARGET_PLATFORM_FIT_UNKNOWN
+            } else {
+                FABRIC_CONTRACT_TARGET_PLATFORM_FIT_COMPATIBLE
+            }
+            .to_string(),
+            candidate_fulfillment_refs: candidates.clone(),
+            selected_fulfillment_ref: candidates.first().cloned(),
+            source_refs: Vec::new(),
+            build_refs: Vec::new(),
+            platform_refs: Vec::new(),
+            adapter_refs: Vec::new(),
+            proof_requirement_refs: Vec::new(),
+            proof_refs: Vec::new(),
+            evidence_refs,
+            blocked_reasons: slot_blockers,
+            safe_facts: json!({ "role": role, "reducedBy": "host-fabric" }),
+        });
+    }
+
+    let blocked_reasons = normalize_refs(blocked_reasons.into_iter().collect());
+    let gateway_candidates =
+        contribution_outputs_for_role(&input.contributions, FABRIC_MEMBER_ROLE_GATEWAY_ASSOCIATION);
+    let service_edge_candidates = contribution_outputs_for_role(
+        &input.contributions,
+        FABRIC_MEMBER_ROLE_SERVICE_EDGE_ADAPTER,
+    );
+    let registry = ContractTargetRegistryPosture {
+        kind: Some(RECORD_CONTRACT_TARGET_REGISTRY_POSTURE.to_string()),
+        registry_ref: contract_target_registry_ref(&input.target.target_ref),
+        target_ref: input.target.target_ref.clone(),
+        contract_ref: input.target.contract_ref.clone(),
+        state: if blocked_reasons.is_empty() {
+            FABRIC_CONTRACT_TARGET_REGISTRY_READY
+        } else {
+            FABRIC_CONTRACT_TARGET_REGISTRY_BLOCKED
+        }
+        .to_string(),
+        slot_postures,
+        candidate_fulfillment_refs: unique_preserve_order(candidate_fulfillment_refs),
+        source_refs: input.target.capability_slot_refs.clone(),
+        build_refs: input.target.proof_refs.clone(),
+        adapter_refs: input.target.adapter_refs.clone(),
+        proof_requirement_refs: vec![
+            "proof-requirement:candidate-reduction".to_string(),
+            "proof-requirement:selected-fulfillment".to_string(),
+            "proof-requirement:no-service-identity-mutation".to_string(),
+        ],
+        proof_refs: input.target.proof_refs.clone(),
+        evidence_refs: normalize_refs(
+            input
+                .target
+                .evidence_refs
+                .iter()
+                .cloned()
+                .chain(["evidence:target-registry:fabric-reduction".to_string()])
+                .collect(),
+        ),
+        blocked_reasons: blocked_reasons.clone(),
+        safe_facts: json!({
+            "gatewayCandidates": gateway_candidates.len(),
+            "serviceEdgeCandidates": service_edge_candidates.len(),
+            "selectedGateway": gateway_candidates.first().cloned()
+        }),
+        observed_at: input.observed_at,
+        expires_at: input.expires_at,
+    };
+    validate_contract_target_registry_posture(&registry)?;
+
+    let fulfillment_plan = reduce_host_fabric(HostFabricReductionInput {
+        plan_id: input.plan_id,
+        fabric_ref: input.fabric_ref,
+        host_ref: input.host_ref,
+        contract_ref: input.contract_ref,
+        required_roles: slot_specs
+            .iter()
+            .map(|(_, role)| HostFabricRoleRequirement {
+                role_ref: role_ref(role),
+                min_ready: 1,
+            })
+            .collect(),
+        contributions: input.contributions.clone(),
+        lifecycle_plans: input.lifecycle_plans,
+        materialization_budget_refs: input.materialization_budget_refs,
+        known_missing_role_refs: registry
+            .slot_postures
+            .iter()
+            .filter(|slot| slot.state == FABRIC_CONTRACT_TARGET_SLOT_MISSING)
+            .map(|slot| role_ref_for_slot(&slot.slot_ref))
+            .collect(),
+        evidence_refs: registry.evidence_refs.clone(),
+        blocked_reasons,
+        association_handoff_ref: input.association_handoff_ref,
+        observed_at: input.observed_at,
+        expires_at: input.expires_at,
+    })?
+    .fulfillment_plan;
+    let candidate_gateway_refs = contribution_outputs_for_role_from_slots(
+        &registry.slot_postures,
+        "slot:gateway-association",
+    );
+    Ok(ContractTargetRegistryReduction {
+        selected_gateway_ref: registry
+            .slot_postures
+            .iter()
+            .find(|slot| slot.slot_ref == "slot:gateway-association")
+            .and_then(|slot| slot.selected_fulfillment_ref.clone()),
+        candidate_gateway_refs,
+        registry,
+        fulfillment_plan,
+    })
+}
+
+fn contribution_outputs_for_role(
+    contributions: &[HostFabricMemberContribution],
+    role: &str,
+) -> Vec<String> {
+    unique_preserve_order(
+        contributions
+            .iter()
+            .filter(|contribution| {
+                contribution.role == role && is_ready_contribution(&contribution.state)
+            })
+            .flat_map(|contribution| {
+                if contribution.output_refs.is_empty() {
+                    vec![contribution.contribution_id.clone()]
+                } else {
+                    contribution.output_refs.clone()
+                }
+            })
+            .collect(),
+    )
+}
+
+fn contribution_evidence_for_role(
+    contributions: &[HostFabricMemberContribution],
+    role: &str,
+) -> Vec<String> {
+    unique_preserve_order(
+        contributions
+            .iter()
+            .filter(|contribution| contribution.role == role)
+            .flat_map(|contribution| contribution.evidence_refs.clone())
+            .collect(),
+    )
+}
+
+fn contribution_outputs_for_role_from_slots(
+    slots: &[ContractTargetSlotPosture],
+    slot_ref: &str,
+) -> Vec<String> {
+    slots
+        .iter()
+        .find(|slot| slot.slot_ref == slot_ref)
+        .map(|slot| slot.candidate_fulfillment_refs.clone())
+        .unwrap_or_default()
+}
+
+fn role_ref_for_slot(slot_ref: &str) -> String {
+    match slot_ref {
+        "slot:gateway-association" => role_ref(FABRIC_MEMBER_ROLE_GATEWAY_ASSOCIATION),
+        "slot:service-edge-adapter" => role_ref(FABRIC_MEMBER_ROLE_SERVICE_EDGE_ADAPTER),
+        "slot:platform-adapter" => role_ref(FABRIC_MEMBER_ROLE_PLATFORM_ADAPTER),
+        "slot:runtime" => role_ref(FABRIC_MEMBER_ROLE_RUNTIME),
+        "slot:nvr-service" => role_ref(FABRIC_MEMBER_ROLE_DOMAIN_SERVICE),
+        _ => slot_ref.to_string(),
+    }
+}
+
+fn contract_target_registry_ref(target_ref: &str) -> String {
+    target_ref
+        .strip_prefix("contract-target:")
+        .map(|tail| format!("contract-target-registry:{tail}"))
+        .unwrap_or_else(|| format!("contract-target-registry:{target_ref}"))
+}
+
+fn unique_preserve_order(values: Vec<String>) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for value in values {
+        let value = value.trim().to_string();
+        if value.is_empty() || !seen.insert(value.clone()) {
+            continue;
+        }
+        out.push(value);
+    }
+    out
 }
 
 pub fn reduce_host_fabric_shadow_parity(
@@ -494,7 +758,8 @@ mod tests {
         FABRIC_MEMBER_ROLE_BUILD_PROCESSOR, FABRIC_MEMBER_ROLE_DOMAIN_SERVICE,
         FABRIC_MEMBER_ROLE_GATEWAY_ASSOCIATION, FABRIC_MEMBER_ROLE_HOST_SERVICE_ADAPTER,
         FABRIC_MEMBER_ROLE_PLATFORM_ADAPTER, FABRIC_MEMBER_ROLE_RUNTIME,
-        FABRIC_MEMBER_ROLE_SURFACE, LifecyclePhasePosture, RECORD_LIFECYCLE_PLAN_POSTURE,
+        FABRIC_MEMBER_ROLE_SERVICE_EDGE_ADAPTER, FABRIC_MEMBER_ROLE_SURFACE, LifecyclePhasePosture,
+        RECORD_LIFECYCLE_PLAN_POSTURE,
     };
 
     const MEMBER_REF: &str = "4a29ff60c5c3837e9e20555bfeb2a046be3eb140818144628691fcf7efb1d2f1";
@@ -543,6 +808,36 @@ mod tests {
             } else {
                 vec![]
             },
+            safe_facts: json!({ "fixture": id }),
+            observed_at: 1_700_000_000,
+            expires_at: Some(1_700_003_600),
+        })
+        .expect("contribution validates")
+    }
+
+    fn contribution_for_role_with_outputs(
+        id: &str,
+        role: &str,
+        output_refs: Vec<&str>,
+    ) -> HostFabricMemberContribution {
+        build_host_fabric_member_contribution(HostFabricMemberContributionSpec {
+            contribution_id: id.to_string(),
+            fabric_ref: "fabric:multi-gateway-dev".to_string(),
+            host_ref: "host:fabric-dev".to_string(),
+            member_ref: MEMBER_REF.to_string(),
+            role: role.to_string(),
+            state: FABRIC_MEMBER_CONTRIBUTION_RUNNING.to_string(),
+            contract_ref: format!("contract:{role}.test@0.1.0"),
+            subject_ref: format!("subject:{role}:test"),
+            capability_refs: vec![format!("capability:{role}:fulfill")],
+            grant_refs: vec![format!("grant:{role}:test")],
+            input_refs: vec!["contract-target:multi-gateway:msa-transition".to_string()],
+            output_refs: output_refs.into_iter().map(str::to_string).collect(),
+            evidence_refs: vec![format!("evidence:{id}")],
+            lifecycle_plan_refs: vec![],
+            release_refs: vec![],
+            resource_posture: None,
+            blocked_reasons: vec![],
             safe_facts: json!({ "fixture": id }),
             observed_at: 1_700_000_000,
             expires_at: Some(1_700_003_600),
@@ -769,6 +1064,105 @@ mod tests {
                 .as_u64()
                 .unwrap()
                 >= roles.len() as u64
+        );
+    }
+
+    #[test]
+    fn reduces_multi_gateway_target_registry_from_member_contributions() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(
+            "../../constitute-protocol/vectors/contract-target-multi-gateway-v1.json"
+        ))
+        .expect("multi-gateway vector");
+        let target: ContractTarget =
+            serde_json::from_value(vector["target"].clone()).expect("target");
+        let reduction =
+            reduce_contract_target_registry_from_fabric(ContractTargetRegistryReductionInput {
+                plan_id: "fabric-plan:multi-gateway:target-registry".to_string(),
+                fabric_ref: "fabric:multi-gateway-dev".to_string(),
+                host_ref: "host:fabric-dev".to_string(),
+                contract_ref: "app:contract:constitute-nvr@0.1.0".to_string(),
+                target,
+                contributions: vec![
+                    contribution_for_role_with_outputs(
+                        "fabric-contribution:gateway-association:local-dev",
+                        FABRIC_MEMBER_ROLE_GATEWAY_ASSOCIATION,
+                        vec!["fulfillment:gateway-association:local-dev"],
+                    ),
+                    contribution_for_role_with_outputs(
+                        "fabric-contribution:gateway-association:lab-dev",
+                        FABRIC_MEMBER_ROLE_GATEWAY_ASSOCIATION,
+                        vec!["fulfillment:gateway-association:lab-dev"],
+                    ),
+                    contribution_for_role_with_outputs(
+                        "fabric-contribution:service-edge:nvr",
+                        FABRIC_MEMBER_ROLE_SERVICE_EDGE_ADAPTER,
+                        vec![
+                            "fulfillment:nvr-service-edge:local-network",
+                            "fulfillment:nvr-service-edge:lab-network",
+                        ],
+                    ),
+                    contribution_for_role_with_outputs(
+                        "fabric-contribution:platform-adapter:browser-webrtc",
+                        FABRIC_MEMBER_ROLE_PLATFORM_ADAPTER,
+                        vec!["fulfillment:platform-adapter:browser-webrtc"],
+                    ),
+                    contribution_for_role_with_outputs(
+                        "fabric-contribution:runtime:browser",
+                        FABRIC_MEMBER_ROLE_RUNTIME,
+                        vec!["fulfillment:runtime:browser"],
+                    ),
+                    contribution_for_role_with_outputs(
+                        "fabric-contribution:nvr-service",
+                        FABRIC_MEMBER_ROLE_DOMAIN_SERVICE,
+                        vec![
+                            "fulfillment:nvr-service:local-network",
+                            "fulfillment:nvr-service:lab-network",
+                        ],
+                    ),
+                ],
+                lifecycle_plans: vec![],
+                materialization_budget_refs: vec![
+                    "materialization-budget:target-registry:hot".to_string(),
+                ],
+                association_handoff_ref: Some(
+                    "handoff:substrate:lab-gateway:initial-owner".to_string(),
+                ),
+                observed_at: 1_700_000_000,
+                expires_at: Some(1_700_003_600),
+            })
+            .expect("target reduction");
+
+        assert_eq!(
+            reduction.registry.state,
+            FABRIC_CONTRACT_TARGET_REGISTRY_READY
+        );
+        assert_eq!(
+            reduction.fulfillment_plan.state,
+            FABRIC_FULFILLMENT_PLAN_READY
+        );
+        assert_eq!(
+            reduction.selected_gateway_ref.as_deref(),
+            Some("fulfillment:gateway-association:local-dev")
+        );
+        assert_eq!(
+            reduction.candidate_gateway_refs,
+            vec![
+                "fulfillment:gateway-association:local-dev".to_string(),
+                "fulfillment:gateway-association:lab-dev".to_string()
+            ]
+        );
+        assert!(
+            reduction
+                .registry
+                .slot_postures
+                .iter()
+                .all(|slot| slot.safe_facts.get("serviceIdentityMutation").is_none())
+        );
+        assert!(
+            reduction
+                .fulfillment_plan
+                .member_contribution_refs
+                .contains(&"fabric-contribution:gateway-association:lab-dev".to_string())
         );
     }
 
