@@ -65,6 +65,25 @@ pub struct HostFabricReduction {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct HostFabricShadowParityInput {
+    pub reduction: HostFabricReductionInput,
+    #[serde(default)]
+    pub legacy_ready_role_refs: Vec<String>,
+    #[serde(default)]
+    pub legacy_blocked_role_refs: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostFabricShadowParity {
+    pub reduction: HostFabricReduction,
+    pub agreement_role_refs: Vec<String>,
+    pub disagreement_role_refs: Vec<String>,
+    pub blocked_reasons: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct HostFabricMemberContributionSpec {
     pub contribution_id: String,
     pub fabric_ref: String,
@@ -96,6 +115,95 @@ pub struct HostFabricMemberContributionSpec {
     pub safe_facts: serde_json::Value,
     pub observed_at: u64,
     pub expires_at: Option<u64>,
+}
+
+pub fn reduce_host_fabric_shadow_parity(
+    input: HostFabricShadowParityInput,
+) -> Result<HostFabricShadowParity> {
+    let mut reduction_input = input.reduction;
+    let legacy_ready_role_refs = normalize_role_refs(input.legacy_ready_role_refs);
+    let legacy_blocked_role_refs = normalize_role_refs(input.legacy_blocked_role_refs);
+    let required_min_ready = reduction_input
+        .required_roles
+        .iter()
+        .map(|role| (role_ref(&role.role_ref), role.min_ready))
+        .collect::<BTreeMap<_, _>>();
+    let mut ready_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut usable_counts: BTreeMap<String, usize> = BTreeMap::new();
+
+    for contribution in &reduction_input.contributions {
+        validate_host_fabric_member_contribution(contribution)?;
+        if contribution.fabric_ref != reduction_input.fabric_ref
+            || contribution.host_ref != reduction_input.host_ref
+        {
+            continue;
+        }
+        let role = role_ref(&contribution.role);
+        if is_ready_contribution(&contribution.state) {
+            *ready_counts.entry(role.clone()).or_default() += 1;
+            *usable_counts.entry(role).or_default() += 1;
+        } else if is_degraded_contribution(&contribution.state) {
+            *usable_counts.entry(role).or_default() += 1;
+        }
+    }
+
+    let mut agreement_role_refs = BTreeSet::new();
+    let mut disagreement_role_refs = BTreeSet::new();
+    let mut parity_blockers = BTreeSet::new();
+
+    for role in &legacy_ready_role_refs {
+        let Some(min_ready) = required_min_ready.get(role).copied() else {
+            disagreement_role_refs.insert(role.clone());
+            parity_blockers.insert(format!(
+                "hostFabric:legacyDisagreement:unmodeledRole:{role}"
+            ));
+            continue;
+        };
+        let ready_count = ready_counts.get(role).copied().unwrap_or_default();
+        let usable_count = usable_counts.get(role).copied().unwrap_or_default();
+        if ready_count >= min_ready {
+            agreement_role_refs.insert(role.clone());
+        } else {
+            disagreement_role_refs.insert(role.clone());
+            let posture = if usable_count >= min_ready {
+                "degradedRole"
+            } else {
+                "missingRole"
+            };
+            parity_blockers.insert(format!("hostFabric:legacyDisagreement:{posture}:{role}"));
+        }
+    }
+
+    for role in &legacy_blocked_role_refs {
+        if ready_counts.get(role).copied().unwrap_or_default() > 0 {
+            disagreement_role_refs.insert(role.clone());
+            parity_blockers.insert(format!(
+                "hostFabric:legacyDisagreement:legacyBlockedFabricReady:{role}"
+            ));
+        } else {
+            agreement_role_refs.insert(role.clone());
+        }
+    }
+
+    reduction_input
+        .blocked_reasons
+        .extend(parity_blockers.iter().cloned());
+    let reduction = reduce_host_fabric(reduction_input)?;
+    let blocked_reasons = normalize_refs(
+        reduction
+            .blocked_reasons
+            .iter()
+            .cloned()
+            .chain(parity_blockers)
+            .collect(),
+    );
+
+    Ok(HostFabricShadowParity {
+        reduction,
+        agreement_role_refs: agreement_role_refs.into_iter().collect(),
+        disagreement_role_refs: disagreement_role_refs.into_iter().collect(),
+        blocked_reasons,
+    })
 }
 
 fn one() -> usize {
@@ -330,6 +438,17 @@ fn role_ref(role: &str) -> String {
     } else {
         format!("role:{role}")
     }
+}
+
+fn normalize_role_refs(values: Vec<String>) -> Vec<String> {
+    values
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(|value| role_ref(&value))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 fn is_ready_contribution(state: &str) -> bool {
@@ -651,5 +770,127 @@ mod tests {
                 .unwrap()
                 >= roles.len() as u64
         );
+    }
+
+    #[test]
+    fn shadow_parity_preserves_ready_plan_when_legacy_and_fabric_agree() {
+        let contributions = vec![
+            contribution_for_role(
+                "fabric-contribution:gatewayAssociation",
+                FABRIC_MEMBER_ROLE_GATEWAY_ASSOCIATION,
+                FABRIC_MEMBER_CONTRIBUTION_RUNNING,
+                "fabric:lab-gateway",
+                "host:lab-service-manager",
+            ),
+            contribution_for_role(
+                "fabric-contribution:hostServiceAdapter",
+                FABRIC_MEMBER_ROLE_HOST_SERVICE_ADAPTER,
+                FABRIC_MEMBER_CONTRIBUTION_RUNNING,
+                "fabric:lab-gateway",
+                "host:lab-service-manager",
+            ),
+        ];
+        let parity = reduce_host_fabric_shadow_parity(HostFabricShadowParityInput {
+            reduction: HostFabricReductionInput {
+                plan_id: "fabric-plan:shadow-parity:ready".to_string(),
+                fabric_ref: "fabric:lab-gateway".to_string(),
+                host_ref: "host:lab-service-manager".to_string(),
+                contract_ref: "contract:host-fabric.shadow@0.1.0".to_string(),
+                required_roles: vec![
+                    HostFabricRoleRequirement {
+                        role_ref: role_ref(FABRIC_MEMBER_ROLE_GATEWAY_ASSOCIATION),
+                        min_ready: 1,
+                    },
+                    HostFabricRoleRequirement {
+                        role_ref: role_ref(FABRIC_MEMBER_ROLE_HOST_SERVICE_ADAPTER),
+                        min_ready: 1,
+                    },
+                ],
+                contributions,
+                lifecycle_plans: vec![lifecycle(FABRIC_LIFECYCLE_PLAN_READY)],
+                materialization_budget_refs: vec!["materialization-budget:shadow".to_string()],
+                known_missing_role_refs: vec![],
+                evidence_refs: vec!["evidence:legacy-posture:ready".to_string()],
+                blocked_reasons: vec![],
+                association_handoff_ref: Some(
+                    "handoff:substrate:lab-gateway:initial-owner".to_string(),
+                ),
+                observed_at: 1_700_000_000,
+                expires_at: Some(1_700_003_600),
+            },
+            legacy_ready_role_refs: vec![
+                FABRIC_MEMBER_ROLE_GATEWAY_ASSOCIATION.to_string(),
+                FABRIC_MEMBER_ROLE_HOST_SERVICE_ADAPTER.to_string(),
+            ],
+            legacy_blocked_role_refs: vec![],
+        })
+        .expect("shadow parity reduces");
+
+        assert_eq!(
+            parity.reduction.fulfillment_plan.state,
+            FABRIC_FULFILLMENT_PLAN_READY
+        );
+        assert_eq!(parity.disagreement_role_refs, Vec::<String>::new());
+        assert_eq!(parity.agreement_role_refs.len(), 2);
+    }
+
+    #[test]
+    fn shadow_parity_blocks_legacy_ready_role_missing_from_fabric() {
+        let parity = reduce_host_fabric_shadow_parity(HostFabricShadowParityInput {
+            reduction: HostFabricReductionInput {
+                plan_id: "fabric-plan:shadow-parity:missing".to_string(),
+                fabric_ref: "fabric:lab-gateway".to_string(),
+                host_ref: "host:lab-service-manager".to_string(),
+                contract_ref: "contract:host-fabric.shadow@0.1.0".to_string(),
+                required_roles: vec![
+                    HostFabricRoleRequirement {
+                        role_ref: role_ref(FABRIC_MEMBER_ROLE_GATEWAY_ASSOCIATION),
+                        min_ready: 1,
+                    },
+                    HostFabricRoleRequirement {
+                        role_ref: role_ref(FABRIC_MEMBER_ROLE_HOST_SERVICE_ADAPTER),
+                        min_ready: 1,
+                    },
+                ],
+                contributions: vec![contribution_for_role(
+                    "fabric-contribution:gatewayAssociation",
+                    FABRIC_MEMBER_ROLE_GATEWAY_ASSOCIATION,
+                    FABRIC_MEMBER_CONTRIBUTION_RUNNING,
+                    "fabric:lab-gateway",
+                    "host:lab-service-manager",
+                )],
+                lifecycle_plans: vec![lifecycle(FABRIC_LIFECYCLE_PLAN_READY)],
+                materialization_budget_refs: vec!["materialization-budget:shadow".to_string()],
+                known_missing_role_refs: vec![],
+                evidence_refs: vec!["evidence:legacy-posture:ready".to_string()],
+                blocked_reasons: vec![],
+                association_handoff_ref: Some(
+                    "handoff:substrate:lab-gateway:initial-owner".to_string(),
+                ),
+                observed_at: 1_700_000_000,
+                expires_at: Some(1_700_003_600),
+            },
+            legacy_ready_role_refs: vec![
+                FABRIC_MEMBER_ROLE_GATEWAY_ASSOCIATION.to_string(),
+                FABRIC_MEMBER_ROLE_HOST_SERVICE_ADAPTER.to_string(),
+            ],
+            legacy_blocked_role_refs: vec![],
+        })
+        .expect("shadow parity reduces");
+
+        assert_eq!(
+            parity.reduction.fulfillment_plan.state,
+            FABRIC_FULFILLMENT_PLAN_BLOCKED
+        );
+        assert_eq!(
+            parity.disagreement_role_refs,
+            vec!["role:hostServiceAdapter".to_string()]
+        );
+        assert!(parity.blocked_reasons.contains(
+            &"hostFabric:legacyDisagreement:missingRole:role:hostServiceAdapter".to_string()
+        ));
+        assert!(parity.reduction.fulfillment_plan.blocked_reasons.contains(
+            &"hostFabric:legacyDisagreement:missingRole:role:hostServiceAdapter".to_string()
+        ));
     }
 }
