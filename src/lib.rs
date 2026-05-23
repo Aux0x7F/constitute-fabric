@@ -661,6 +661,15 @@ pub fn reduce_host_fabric(input: HostFabricReductionInput) -> Result<HostFabricR
         missing_role_refs: missing_role_refs.clone(),
         lifecycle_plan_refs: lifecycle_plan_refs.clone(),
         materialization_budget_refs: materialization_budget_refs.clone(),
+        action_authority_refs: vec![format!("authority:host-fabric:{contract_ref}")],
+        delegated_role_refs: required_role_refs.clone(),
+        fallback_refs: vec![format!("fallback:host-fabric:{plan_id}")],
+        quarantine_refs: vec![format!("quarantine:host-fabric:{plan_id}")],
+        rollback_refs: vec![format!("rollback:host-fabric:{plan_id}")],
+        evidence_requirement_refs: required_role_refs
+            .iter()
+            .map(|role_ref| format!("proof-requirement:host-fabric:{role_ref}"))
+            .collect(),
         association_handoff_ref: association_handoff_ref.clone(),
         evidence_refs: evidence_refs.clone(),
         blocked_reasons: blocked_reasons.clone(),
