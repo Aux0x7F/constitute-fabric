@@ -1,6 +1,13 @@
 use anyhow::{Result, anyhow};
 use constitute_protocol::{
-    ContractTarget, ContractTargetRegistryPosture, ContractTargetSlotPosture,
+    CARRIER_EDGE_ADAPTER_IPC, CARRIER_EDGE_ADAPTER_LOOPBACK, CARRIER_EDGE_ADAPTER_NAMED_PIPE,
+    CARRIER_EDGE_ADAPTER_QUIC, CARRIER_EDGE_ADAPTER_RELAY, CARRIER_EDGE_ADAPTER_WEB_SOCKET,
+    CARRIER_EDGE_ADAPTER_WORKER, CARRIER_EDGE_BACKPRESSURE_BLOCKED,
+    CARRIER_EDGE_BACKPRESSURE_CLEAR, CARRIER_EDGE_BACKPRESSURE_DEGRADED,
+    CARRIER_EDGE_REQUIREMENT_ACTIONABLE, CARRIER_EDGE_REQUIREMENT_BLOCKED,
+    CARRIER_EDGE_SELECTION_ACTIONABLE, CARRIER_EDGE_SELECTION_BLOCKED,
+    CARRIER_EDGE_SELECTION_DEGRADED, CarrierEdgeRequirement, CarrierEdgeSelection, ContractTarget,
+    ContractTargetRegistryPosture, ContractTargetSlotPosture,
     FABRIC_CONTRACT_TARGET_PLATFORM_FIT_COMPATIBLE, FABRIC_CONTRACT_TARGET_PLATFORM_FIT_UNKNOWN,
     FABRIC_CONTRACT_TARGET_REGISTRY_BLOCKED, FABRIC_CONTRACT_TARGET_REGISTRY_READY,
     FABRIC_CONTRACT_TARGET_SLOT_AVAILABLE, FABRIC_CONTRACT_TARGET_SLOT_MISSING,
@@ -17,9 +24,11 @@ use constitute_protocol::{
     FABRIC_MEMBER_ROLE_SERVICE_EDGE_ADAPTER, FABRIC_TOPOLOGY_ROLE_BLOCKED,
     FABRIC_TOPOLOGY_ROLE_DEGRADED, FABRIC_TOPOLOGY_ROLE_MISSING, FABRIC_TOPOLOGY_ROLE_READY,
     HostFabricFulfillmentPlan, HostFabricMemberContribution, HostFabricTopologyProjection,
-    HostFabricTopologyRolePosture, LifecyclePlanPosture, RECORD_CONTRACT_TARGET_REGISTRY_POSTURE,
+    HostFabricTopologyRolePosture, LifecyclePlanPosture, RECORD_CARRIER_EDGE_REQUIREMENT,
+    RECORD_CARRIER_EDGE_SELECTION, RECORD_CONTRACT_TARGET_REGISTRY_POSTURE,
     RECORD_HOST_FABRIC_FULFILLMENT_PLAN, RECORD_HOST_FABRIC_MEMBER_CONTRIBUTION,
-    RECORD_HOST_FABRIC_TOPOLOGY_PROJECTION, ResourcePosture, validate_contract_target,
+    RECORD_HOST_FABRIC_TOPOLOGY_PROJECTION, ResourcePosture, validate_carrier_edge_requirement,
+    validate_carrier_edge_selection, validate_contract_target,
     validate_contract_target_registry_posture, validate_host_fabric_fulfillment_plan,
     validate_host_fabric_member_contribution, validate_host_fabric_topology_projection,
     validate_lifecycle_plan_posture,
@@ -164,6 +173,59 @@ pub struct ContractTargetRegistryReduction {
     pub fulfillment_plan: HostFabricFulfillmentPlan,
     pub selected_gateway_ref: Option<String>,
     pub candidate_gateway_refs: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CarrierEdgeCandidate {
+    pub adapter_ref: String,
+    pub adapter_kind: String,
+    #[serde(default)]
+    pub contribution_ref: Option<String>,
+    #[serde(default)]
+    pub evidence_refs: Vec<String>,
+    #[serde(default)]
+    pub blocked_reasons: Vec<String>,
+    pub state: String,
+    #[serde(default)]
+    pub priority: u16,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CarrierEdgeSelectionInput {
+    pub requirement_id: String,
+    pub selection_id: String,
+    pub subject_ref: String,
+    pub fabric_ref: String,
+    pub host_ref: String,
+    #[serde(default)]
+    pub source_ref: Option<String>,
+    #[serde(default)]
+    pub consumer_ref: Option<String>,
+    #[serde(default)]
+    pub route_association_ref: Option<String>,
+    #[serde(default)]
+    pub policy_ref: Option<String>,
+    #[serde(default)]
+    pub required_capability_refs: Vec<String>,
+    #[serde(default)]
+    pub candidates: Vec<CarrierEdgeCandidate>,
+    #[serde(default)]
+    pub evidence_refs: Vec<String>,
+    pub observed_at: u64,
+    #[serde(default)]
+    pub expires_at: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CarrierEdgeSelectionReduction {
+    pub requirement: CarrierEdgeRequirement,
+    pub selection: CarrierEdgeSelection,
+    pub candidate_adapter_refs: Vec<String>,
+    pub selected_adapter_ref: Option<String>,
+    pub blocked_reasons: Vec<String>,
 }
 
 pub fn reduce_contract_target_registry_from_fabric(
@@ -315,6 +377,194 @@ pub fn reduce_contract_target_registry_from_fabric(
         candidate_gateway_refs,
         registry,
         fulfillment_plan,
+    })
+}
+
+pub fn reduce_carrier_edge_selection_from_fabric(
+    input: CarrierEdgeSelectionInput,
+) -> Result<CarrierEdgeSelectionReduction> {
+    require_ref(&input.requirement_id, "requirementId")?;
+    require_ref(&input.selection_id, "selectionId")?;
+    require_ref(&input.subject_ref, "subjectRef")?;
+    require_ref(&input.fabric_ref, "fabricRef")?;
+    require_ref(&input.host_ref, "hostRef")?;
+    if input
+        .expires_at
+        .is_some_and(|expires_at| expires_at <= input.observed_at)
+    {
+        return Err(anyhow!(
+            "carrier edge selection expiresAt must be after observedAt"
+        ));
+    }
+
+    let mut candidates = input.candidates.clone();
+    candidates.sort_by(|left, right| {
+        left.priority
+            .cmp(&right.priority)
+            .then_with(|| left.adapter_ref.cmp(&right.adapter_ref))
+    });
+    let candidate_adapter_refs = unique_preserve_order(
+        candidates
+            .iter()
+            .map(|candidate| candidate.adapter_ref.clone())
+            .collect(),
+    );
+    let allowed_adapter_kinds = unique_preserve_order(
+        candidates
+            .iter()
+            .map(|candidate| candidate.adapter_kind.clone())
+            .collect(),
+    );
+    let mut evidence_refs = input.evidence_refs.clone();
+    let mut blocked_reasons = BTreeSet::new();
+    let mut fallback_refs = Vec::new();
+    let mut selected_candidate: Option<CarrierEdgeCandidate> = None;
+    let mut degraded_candidate: Option<CarrierEdgeCandidate> = None;
+
+    for candidate in &candidates {
+        require_ref(&candidate.adapter_ref, "candidate adapterRef")?;
+        require_ref(&candidate.adapter_kind, "candidate adapterKind")?;
+        if !matches!(
+            candidate.adapter_kind.as_str(),
+            CARRIER_EDGE_ADAPTER_WEB_SOCKET
+                | CARRIER_EDGE_ADAPTER_QUIC
+                | CARRIER_EDGE_ADAPTER_IPC
+                | CARRIER_EDGE_ADAPTER_WORKER
+                | CARRIER_EDGE_ADAPTER_LOOPBACK
+                | CARRIER_EDGE_ADAPTER_RELAY
+                | CARRIER_EDGE_ADAPTER_NAMED_PIPE
+        ) {
+            return Err(anyhow!("unsupported carrier edge candidate adapterKind"));
+        }
+        evidence_refs.extend(candidate.evidence_refs.clone());
+        match candidate.state.as_str() {
+            "actionable" => {
+                if selected_candidate.is_none() {
+                    selected_candidate = Some(candidate.clone());
+                } else {
+                    fallback_refs.push(candidate.adapter_ref.clone());
+                }
+            }
+            "degraded" => {
+                if degraded_candidate.is_none() {
+                    degraded_candidate = Some(candidate.clone());
+                } else {
+                    fallback_refs.push(candidate.adapter_ref.clone());
+                }
+                blocked_reasons.extend(candidate.blocked_reasons.clone());
+            }
+            "blocked" | "released" | "expired" => {
+                blocked_reasons.extend(candidate.blocked_reasons.clone());
+                blocked_reasons.insert(format!(
+                    "carrierEdge:candidate:{}:{}",
+                    candidate.state, candidate.adapter_ref
+                ));
+            }
+            _ => return Err(anyhow!("unsupported carrier edge candidate state")),
+        }
+    }
+
+    let selected = selected_candidate.or(degraded_candidate);
+    let state = if let Some(candidate) = selected.as_ref() {
+        if candidate.state == "degraded" {
+            CARRIER_EDGE_SELECTION_DEGRADED
+        } else {
+            CARRIER_EDGE_SELECTION_ACTIONABLE
+        }
+    } else {
+        blocked_reasons.insert("carrierEdge:noActionableAdapter".to_string());
+        CARRIER_EDGE_SELECTION_BLOCKED
+    };
+    let requirement_state = if selected.is_some() {
+        CARRIER_EDGE_REQUIREMENT_ACTIONABLE
+    } else {
+        CARRIER_EDGE_REQUIREMENT_BLOCKED
+    };
+    let backpressure_state = if state == CARRIER_EDGE_SELECTION_BLOCKED {
+        CARRIER_EDGE_BACKPRESSURE_BLOCKED
+    } else if state == CARRIER_EDGE_SELECTION_DEGRADED {
+        CARRIER_EDGE_BACKPRESSURE_DEGRADED
+    } else {
+        CARRIER_EDGE_BACKPRESSURE_CLEAR
+    };
+    let blocked_reasons = normalize_refs(blocked_reasons.into_iter().collect());
+    let evidence_refs = normalize_refs(evidence_refs);
+    let selected_adapter_ref = selected
+        .as_ref()
+        .map(|candidate| candidate.adapter_ref.clone());
+    let selected_adapter_kind = selected
+        .as_ref()
+        .map(|candidate| candidate.adapter_kind.clone())
+        .unwrap_or_else(|| {
+            allowed_adapter_kinds
+                .first()
+                .cloned()
+                .unwrap_or_else(|| CARRIER_EDGE_ADAPTER_WEB_SOCKET.to_string())
+        });
+
+    let requirement = CarrierEdgeRequirement {
+        kind: Some(RECORD_CARRIER_EDGE_REQUIREMENT.to_string()),
+        requirement_id: input.requirement_id.clone(),
+        subject_ref: input.subject_ref.clone(),
+        source_ref: input.source_ref.clone(),
+        consumer_ref: input.consumer_ref.clone(),
+        fabric_ref: Some(input.fabric_ref.clone()),
+        host_ref: Some(input.host_ref.clone()),
+        route_association_ref: input.route_association_ref.clone(),
+        required_capability_refs: normalize_refs(input.required_capability_refs.clone()),
+        allowed_adapter_kinds: if allowed_adapter_kinds.is_empty() {
+            vec![
+                CARRIER_EDGE_ADAPTER_WEB_SOCKET.to_string(),
+                CARRIER_EDGE_ADAPTER_QUIC.to_string(),
+            ]
+        } else {
+            allowed_adapter_kinds.clone()
+        },
+        candidate_adapter_refs: candidate_adapter_refs.clone(),
+        policy_ref: input.policy_ref.clone(),
+        state: requirement_state.to_string(),
+        safe_facts: json!({
+            "reducer": "host-fabric-carrier-edge",
+            "candidateCount": candidate_adapter_refs.len(),
+            "selectedAdapterKind": selected_adapter_kind
+        }),
+        evidence_refs: evidence_refs.clone(),
+        blocked_reasons: blocked_reasons.clone(),
+        issued_at: input.observed_at,
+        expires_at: input.expires_at,
+    };
+    validate_carrier_edge_requirement(&requirement)?;
+
+    let selection = CarrierEdgeSelection {
+        kind: Some(RECORD_CARRIER_EDGE_SELECTION.to_string()),
+        selection_id: input.selection_id.clone(),
+        requirement_ref: input.requirement_id.clone(),
+        fabric_ref: Some(input.fabric_ref),
+        host_ref: Some(input.host_ref),
+        adapter_kind: selected_adapter_kind,
+        selected_adapter_ref: selected_adapter_ref.clone(),
+        candidate_adapter_refs: candidate_adapter_refs.clone(),
+        fallback_refs: normalize_refs(fallback_refs),
+        selector_ref: Some("selector:host-fabric-carrier-edge".to_string()),
+        state: state.to_string(),
+        backpressure_state: Some(backpressure_state.to_string()),
+        safe_facts: json!({
+            "reducer": "host-fabric-carrier-edge",
+            "candidateCount": candidate_adapter_refs.len()
+        }),
+        evidence_refs,
+        blocked_reasons: blocked_reasons.clone(),
+        observed_at: input.observed_at,
+        expires_at: input.expires_at,
+    };
+    validate_carrier_edge_selection(&selection)?;
+
+    Ok(CarrierEdgeSelectionReduction {
+        requirement,
+        selection,
+        candidate_adapter_refs,
+        selected_adapter_ref,
+        blocked_reasons,
     })
 }
 
@@ -1493,6 +1743,103 @@ mod tests {
                 .fulfillment_plan
                 .member_contribution_refs
                 .contains(&"fabric-contribution:gateway-association:lab-dev".to_string())
+        );
+    }
+
+    #[test]
+    fn reduces_carrier_edge_requirement_and_selection_from_fabric_candidates() {
+        let reduction = reduce_carrier_edge_selection_from_fabric(CarrierEdgeSelectionInput {
+            requirement_id: "carrier-req:gateway-edge:nvr".to_string(),
+            selection_id: "carrier-select:gateway-edge:nvr".to_string(),
+            subject_ref: "service:nvr".to_string(),
+            fabric_ref: "fabric:lab-gateway".to_string(),
+            host_ref: "host:lab-service-manager".to_string(),
+            source_ref: Some("service:nvr".to_string()),
+            consumer_ref: Some("runtime:browser".to_string()),
+            route_association_ref: Some("association:gateway:lab".to_string()),
+            policy_ref: Some("policy:carrier:default".to_string()),
+            required_capability_refs: vec!["swarm.edge.attach".to_string()],
+            candidates: vec![
+                CarrierEdgeCandidate {
+                    adapter_ref: "adapter:gateway:websocket".to_string(),
+                    adapter_kind: CARRIER_EDGE_ADAPTER_WEB_SOCKET.to_string(),
+                    contribution_ref: Some("fabric-contribution:gateway-association".to_string()),
+                    evidence_refs: vec!["evidence:gateway:websocket:ready".to_string()],
+                    blocked_reasons: vec![],
+                    state: "actionable".to_string(),
+                    priority: 10,
+                },
+                CarrierEdgeCandidate {
+                    adapter_ref: "adapter:gateway:quic".to_string(),
+                    adapter_kind: CARRIER_EDGE_ADAPTER_QUIC.to_string(),
+                    contribution_ref: Some("fabric-contribution:gateway-association".to_string()),
+                    evidence_refs: vec!["evidence:gateway:quic:degraded".to_string()],
+                    blocked_reasons: vec!["carrierEdge:firewall:quic".to_string()],
+                    state: "degraded".to_string(),
+                    priority: 20,
+                },
+            ],
+            evidence_refs: vec!["evidence:fabric:gateway-association".to_string()],
+            observed_at: 1_700_000_000,
+            expires_at: Some(1_700_000_090),
+        })
+        .expect("carrier selection reduction");
+
+        assert_eq!(
+            reduction.requirement.kind.as_deref(),
+            Some(RECORD_CARRIER_EDGE_REQUIREMENT)
+        );
+        assert_eq!(
+            reduction.selection.kind.as_deref(),
+            Some(RECORD_CARRIER_EDGE_SELECTION)
+        );
+        assert_eq!(
+            reduction.selected_adapter_ref.as_deref(),
+            Some("adapter:gateway:websocket")
+        );
+        assert_eq!(reduction.selection.state, CARRIER_EDGE_SELECTION_ACTIONABLE);
+        assert_eq!(
+            reduction.selection.backpressure_state.as_deref(),
+            Some(CARRIER_EDGE_BACKPRESSURE_CLEAR)
+        );
+        assert!(
+            reduction
+                .requirement
+                .safe_facts
+                .get("selectedAdapterKind")
+                .is_some()
+        );
+
+        let blocked = reduce_carrier_edge_selection_from_fabric(CarrierEdgeSelectionInput {
+            requirement_id: "carrier-req:blocked".to_string(),
+            selection_id: "carrier-select:blocked".to_string(),
+            subject_ref: "service:nvr".to_string(),
+            fabric_ref: "fabric:lab-gateway".to_string(),
+            host_ref: "host:lab-service-manager".to_string(),
+            source_ref: None,
+            consumer_ref: None,
+            route_association_ref: None,
+            policy_ref: None,
+            required_capability_refs: vec![],
+            candidates: vec![CarrierEdgeCandidate {
+                adapter_ref: "adapter:gateway:websocket".to_string(),
+                adapter_kind: CARRIER_EDGE_ADAPTER_WEB_SOCKET.to_string(),
+                contribution_ref: None,
+                evidence_refs: vec![],
+                blocked_reasons: vec!["carrierEdge:gatewayUnavailable".to_string()],
+                state: "blocked".to_string(),
+                priority: 10,
+            }],
+            evidence_refs: vec![],
+            observed_at: 1_700_000_000,
+            expires_at: Some(1_700_000_090),
+        })
+        .expect("blocked carrier selection reduction");
+        assert_eq!(blocked.selection.state, CARRIER_EDGE_SELECTION_BLOCKED);
+        assert!(
+            blocked
+                .blocked_reasons
+                .contains(&"carrierEdge:noActionableAdapter".to_string())
         );
     }
 
