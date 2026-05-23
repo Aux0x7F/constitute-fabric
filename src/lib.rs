@@ -97,10 +97,16 @@ pub struct HostFabricMemberContributionSpec {
     pub fabric_ref: String,
     pub host_ref: String,
     pub member_ref: String,
+    pub participant_ref: String,
     pub role: String,
+    pub role_ref: String,
     pub state: String,
     pub contract_ref: String,
     pub subject_ref: String,
+    #[serde(default)]
+    pub module_refs: Vec<String>,
+    #[serde(default)]
+    pub source_refs: Vec<String>,
     #[serde(default)]
     pub capability_refs: Vec<String>,
     #[serde(default)]
@@ -657,7 +663,9 @@ pub fn build_host_fabric_member_contribution(
     require_ref(&spec.fabric_ref, "fabricRef")?;
     require_ref(&spec.host_ref, "hostRef")?;
     require_ref(&spec.member_ref, "memberRef")?;
+    require_ref(&spec.participant_ref, "participantRef")?;
     require_ref(&spec.role, "role")?;
+    require_ref(&spec.role_ref, "roleRef")?;
     require_ref(&spec.state, "state")?;
     require_ref(&spec.contract_ref, "contractRef")?;
     require_ref(&spec.subject_ref, "subjectRef")?;
@@ -667,10 +675,14 @@ pub fn build_host_fabric_member_contribution(
         fabric_ref: spec.fabric_ref,
         host_ref: spec.host_ref,
         member_ref: spec.member_ref,
+        participant_ref: spec.participant_ref,
         role: spec.role,
+        role_ref: spec.role_ref,
         state: spec.state,
         contract_ref: spec.contract_ref,
         subject_ref: spec.subject_ref,
+        module_refs: normalize_refs(spec.module_refs),
+        source_refs: normalize_refs(spec.source_refs),
         capability_refs: normalize_refs(spec.capability_refs),
         grant_refs: normalize_refs(spec.grant_refs),
         input_refs: normalize_refs(spec.input_refs),
@@ -791,10 +803,14 @@ mod tests {
             fabric_ref: fabric_ref.to_string(),
             host_ref: host_ref.to_string(),
             member_ref: MEMBER_REF.to_string(),
+            participant_ref: format!("participant:{role}:test"),
             role: role.to_string(),
+            role_ref: format!("role:{role}:test"),
             state: state.to_string(),
             contract_ref: format!("contract:{role}.test@0.1.0"),
             subject_ref: format!("subject:{role}:test"),
+            module_refs: vec![format!("module:{role}:test")],
+            source_refs: vec![format!("content-index:source:{role}:test")],
             capability_refs: vec![format!("capability:{role}:fulfill")],
             grant_refs: vec![format!("grant:{role}:test")],
             input_refs: vec!["contract-target:desktop-dev:msa-transition".to_string()],
@@ -825,10 +841,14 @@ mod tests {
             fabric_ref: "fabric:multi-gateway-dev".to_string(),
             host_ref: "host:fabric-dev".to_string(),
             member_ref: MEMBER_REF.to_string(),
+            participant_ref: format!("participant:{role}:test"),
             role: role.to_string(),
+            role_ref: format!("role:{role}:test"),
             state: FABRIC_MEMBER_CONTRIBUTION_RUNNING.to_string(),
             contract_ref: format!("contract:{role}.test@0.1.0"),
             subject_ref: format!("subject:{role}:test"),
+            module_refs: vec![format!("module:{role}:test")],
+            source_refs: vec![format!("content-index:source:{role}:test")],
             capability_refs: vec![format!("capability:{role}:fulfill")],
             grant_refs: vec![format!("grant:{role}:test")],
             input_refs: vec!["contract-target:multi-gateway:msa-transition".to_string()],
