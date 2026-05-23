@@ -12,12 +12,15 @@ use constitute_protocol::{
     FABRIC_MEMBER_CONTRIBUTION_RELEASED, FABRIC_MEMBER_CONTRIBUTION_RUNNING,
     FABRIC_MEMBER_CONTRIBUTION_SUPERSEDED, FABRIC_MEMBER_ROLE_DOMAIN_SERVICE,
     FABRIC_MEMBER_ROLE_GATEWAY_ASSOCIATION, FABRIC_MEMBER_ROLE_PLATFORM_ADAPTER,
-    FABRIC_MEMBER_ROLE_RUNTIME, FABRIC_MEMBER_ROLE_SERVICE_EDGE_ADAPTER, HostFabricFulfillmentPlan,
-    HostFabricMemberContribution, LifecyclePlanPosture, RECORD_CONTRACT_TARGET_REGISTRY_POSTURE,
-    RECORD_HOST_FABRIC_FULFILLMENT_PLAN, RECORD_HOST_FABRIC_MEMBER_CONTRIBUTION, ResourcePosture,
-    validate_contract_target, validate_contract_target_registry_posture,
+    FABRIC_MEMBER_ROLE_RUNTIME, FABRIC_MEMBER_ROLE_SERVICE_EDGE_ADAPTER,
+    FABRIC_TOPOLOGY_ROLE_BLOCKED, FABRIC_TOPOLOGY_ROLE_DEGRADED, FABRIC_TOPOLOGY_ROLE_MISSING,
+    FABRIC_TOPOLOGY_ROLE_READY, HostFabricFulfillmentPlan, HostFabricMemberContribution,
+    HostFabricTopologyProjection, HostFabricTopologyRolePosture, LifecyclePlanPosture,
+    RECORD_CONTRACT_TARGET_REGISTRY_POSTURE, RECORD_HOST_FABRIC_FULFILLMENT_PLAN,
+    RECORD_HOST_FABRIC_MEMBER_CONTRIBUTION, RECORD_HOST_FABRIC_TOPOLOGY_PROJECTION,
+    ResourcePosture, validate_contract_target, validate_contract_target_registry_posture,
     validate_host_fabric_fulfillment_plan, validate_host_fabric_member_contribution,
-    validate_lifecycle_plan_posture,
+    validate_host_fabric_topology_projection, validate_lifecycle_plan_posture,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -63,6 +66,7 @@ pub struct HostFabricReductionInput {
 #[serde(rename_all = "camelCase")]
 pub struct HostFabricReduction {
     pub fulfillment_plan: HostFabricFulfillmentPlan,
+    pub topology_projection: HostFabricTopologyProjection,
     pub ready_contribution_refs: Vec<String>,
     pub degraded_contribution_refs: Vec<String>,
     pub blocked_contribution_refs: Vec<String>,
@@ -551,7 +555,8 @@ pub fn reduce_host_fabric(input: HostFabricReductionInput) -> Result<HostFabricR
         lifecycle_plan_refs.extend(contribution.lifecycle_plan_refs.clone());
     }
 
-    let mut missing_role_refs = BTreeSet::from_iter(normalize_refs(input.known_missing_role_refs));
+    let mut missing_role_refs =
+        BTreeSet::from_iter(normalize_refs(input.known_missing_role_refs.clone()));
     for missing in &missing_role_refs {
         blocked_reasons.insert(format!("hostFabric:missingRole:{missing}"));
     }
@@ -590,6 +595,13 @@ pub fn reduce_host_fabric(input: HostFabricReductionInput) -> Result<HostFabricR
         }
     }
 
+    let plan_id = input.plan_id.clone();
+    let fabric_ref = input.fabric_ref.clone();
+    let host_ref = input.host_ref.clone();
+    let contract_ref = input.contract_ref.clone();
+    let association_handoff_ref = input.association_handoff_ref.clone();
+    let observed_at = input.observed_at;
+    let expires_at = input.expires_at;
     let member_contribution_refs = usable_by_role
         .values()
         .flatten()
@@ -611,26 +623,26 @@ pub fn reduce_host_fabric(input: HostFabricReductionInput) -> Result<HostFabricR
     let materialization_budget_refs = if input.materialization_budget_refs.is_empty() {
         vec![DEFAULT_MATERIALIZATION_BUDGET_REF.to_string()]
     } else {
-        normalize_refs(input.materialization_budget_refs)
+        normalize_refs(input.materialization_budget_refs.clone())
     };
-    let mut evidence_refs = normalize_refs(input.evidence_refs);
-    evidence_refs.push(format!("evidence:host-fabric-reduction:{}", input.plan_id));
+    let mut evidence_refs = normalize_refs(input.evidence_refs.clone());
+    evidence_refs.push(format!("evidence:host-fabric-reduction:{plan_id}"));
     evidence_refs = normalize_refs(evidence_refs);
 
     let fulfillment_plan = HostFabricFulfillmentPlan {
         kind: Some(RECORD_HOST_FABRIC_FULFILLMENT_PLAN.to_string()),
-        plan_id: input.plan_id,
-        fabric_ref: input.fabric_ref,
-        host_ref: input.host_ref,
-        contract_ref: input.contract_ref,
+        plan_id: plan_id.clone(),
+        fabric_ref: fabric_ref.clone(),
+        host_ref: host_ref.clone(),
+        contract_ref: contract_ref.clone(),
         state: state.to_string(),
-        required_role_refs,
-        member_contribution_refs,
-        missing_role_refs,
+        required_role_refs: required_role_refs.clone(),
+        member_contribution_refs: member_contribution_refs.clone(),
+        missing_role_refs: missing_role_refs.clone(),
         lifecycle_plan_refs: lifecycle_plan_refs.clone(),
-        materialization_budget_refs,
-        association_handoff_ref: input.association_handoff_ref,
-        evidence_refs,
+        materialization_budget_refs: materialization_budget_refs.clone(),
+        association_handoff_ref: association_handoff_ref.clone(),
+        evidence_refs: evidence_refs.clone(),
         blocked_reasons: blocked_reasons.clone(),
         safe_facts: json!({
             "reducer": "host-fabric",
@@ -640,13 +652,23 @@ pub fn reduce_host_fabric(input: HostFabricReductionInput) -> Result<HostFabricR
             "blockedContributionCount": blocked_contribution_refs.len(),
             "filteredContributionCount": filtered_contribution_refs.len()
         }),
-        observed_at: input.observed_at,
-        expires_at: input.expires_at,
+        observed_at,
+        expires_at,
     };
     validate_host_fabric_fulfillment_plan(&fulfillment_plan)?;
+    let topology_projection = reduce_host_fabric_topology_projection(
+        &input,
+        &fulfillment_plan,
+        state,
+        &required_role_refs,
+        &missing_role_refs,
+        &materialization_budget_refs,
+        &evidence_refs,
+    )?;
 
     Ok(HostFabricReduction {
         fulfillment_plan,
+        topology_projection,
         ready_contribution_refs: ready_contribution_refs.into_iter().collect(),
         degraded_contribution_refs: degraded_contribution_refs.into_iter().collect(),
         blocked_contribution_refs: blocked_contribution_refs.into_iter().collect(),
@@ -654,6 +676,166 @@ pub fn reduce_host_fabric(input: HostFabricReductionInput) -> Result<HostFabricR
         lifecycle_plan_refs,
         blocked_reasons,
     })
+}
+
+fn reduce_host_fabric_topology_projection(
+    input: &HostFabricReductionInput,
+    fulfillment_plan: &HostFabricFulfillmentPlan,
+    state: &str,
+    required_role_refs: &[String],
+    missing_role_refs: &[String],
+    materialization_budget_refs: &[String],
+    evidence_refs: &[String],
+) -> Result<HostFabricTopologyProjection> {
+    let relevant_contributions = input
+        .contributions
+        .iter()
+        .filter(|contribution| {
+            contribution.fabric_ref == input.fabric_ref && contribution.host_ref == input.host_ref
+        })
+        .collect::<Vec<_>>();
+    let mut role_refs = BTreeSet::from_iter(required_role_refs.iter().cloned());
+    for contribution in &relevant_contributions {
+        role_refs.insert(role_ref(&contribution.role));
+    }
+
+    let mut ready_role_refs = BTreeSet::new();
+    let mut degraded_role_refs = BTreeSet::new();
+    let mut blocked_role_refs = BTreeSet::new();
+    let mut missing_role_refs_set = BTreeSet::from_iter(missing_role_refs.iter().cloned());
+    let mut member_contribution_refs = BTreeSet::new();
+    let mut participant_refs = BTreeSet::new();
+    let mut module_refs = BTreeSet::new();
+    let mut source_refs = BTreeSet::new();
+    let mut lifecycle_plan_refs = BTreeSet::new();
+    let mut topology_evidence_refs = BTreeSet::from_iter(evidence_refs.iter().cloned());
+    let mut role_postures = Vec::new();
+
+    for role in role_refs {
+        let contributions = relevant_contributions
+            .iter()
+            .copied()
+            .filter(|contribution| role_ref(&contribution.role) == role)
+            .collect::<Vec<_>>();
+        let ready = contributions
+            .iter()
+            .filter(|contribution| is_ready_contribution(&contribution.state))
+            .count();
+        let degraded = contributions
+            .iter()
+            .filter(|contribution| is_degraded_contribution(&contribution.state))
+            .count();
+        let blocked = contributions
+            .iter()
+            .filter(|contribution| is_blocked_contribution(&contribution.state))
+            .count();
+        let role_state = if ready > 0 {
+            ready_role_refs.insert(role.clone());
+            FABRIC_TOPOLOGY_ROLE_READY
+        } else if degraded > 0 {
+            degraded_role_refs.insert(role.clone());
+            FABRIC_TOPOLOGY_ROLE_DEGRADED
+        } else if blocked > 0 {
+            blocked_role_refs.insert(role.clone());
+            FABRIC_TOPOLOGY_ROLE_BLOCKED
+        } else {
+            missing_role_refs_set.insert(role.clone());
+            FABRIC_TOPOLOGY_ROLE_MISSING
+        };
+
+        let contribution_refs = contributions
+            .iter()
+            .map(|contribution| contribution.contribution_id.clone())
+            .collect::<Vec<_>>();
+        let mut role_participant_refs = Vec::new();
+        let mut role_member_refs = Vec::new();
+        let mut role_module_refs = Vec::new();
+        let mut role_source_refs = Vec::new();
+        let mut role_lifecycle_plan_refs = Vec::new();
+        let mut role_evidence_refs = Vec::new();
+        let mut role_blocked_reasons = Vec::new();
+        for contribution in contributions {
+            member_contribution_refs.insert(contribution.contribution_id.clone());
+            participant_refs.insert(contribution.participant_ref.clone());
+            role_participant_refs.push(contribution.participant_ref.clone());
+            role_member_refs.push(contribution.member_ref.clone());
+            for reference in &contribution.module_refs {
+                module_refs.insert(reference.clone());
+                role_module_refs.push(reference.clone());
+            }
+            for reference in &contribution.source_refs {
+                source_refs.insert(reference.clone());
+                role_source_refs.push(reference.clone());
+            }
+            for reference in &contribution.lifecycle_plan_refs {
+                lifecycle_plan_refs.insert(reference.clone());
+                role_lifecycle_plan_refs.push(reference.clone());
+            }
+            for reference in &contribution.evidence_refs {
+                topology_evidence_refs.insert(reference.clone());
+                role_evidence_refs.push(reference.clone());
+            }
+            role_blocked_reasons.extend(contribution.blocked_reasons.clone());
+        }
+        if role_state == FABRIC_TOPOLOGY_ROLE_MISSING {
+            role_blocked_reasons.push(format!("hostFabric:missingRole:{role}"));
+        } else if role_state == FABRIC_TOPOLOGY_ROLE_BLOCKED && role_blocked_reasons.is_empty() {
+            role_blocked_reasons.push(format!("hostFabric:blockedRole:{role}"));
+        }
+
+        role_postures.push(HostFabricTopologyRolePosture {
+            role_ref: role,
+            state: role_state.to_string(),
+            contribution_refs: normalize_refs(contribution_refs),
+            participant_refs: normalize_refs(role_participant_refs),
+            member_refs: normalize_refs(role_member_refs),
+            module_refs: normalize_refs(role_module_refs),
+            source_refs: normalize_refs(role_source_refs),
+            lifecycle_plan_refs: normalize_refs(role_lifecycle_plan_refs),
+            evidence_refs: normalize_refs(role_evidence_refs),
+            blocked_reasons: normalize_refs(role_blocked_reasons),
+            safe_facts: json!({
+                "readyContributionCount": ready,
+                "degradedContributionCount": degraded,
+                "blockedContributionCount": blocked
+            }),
+        });
+    }
+
+    lifecycle_plan_refs.extend(fulfillment_plan.lifecycle_plan_refs.iter().cloned());
+    let projection = HostFabricTopologyProjection {
+        kind: Some(RECORD_HOST_FABRIC_TOPOLOGY_PROJECTION.to_string()),
+        projection_id: format!("host-fabric-topology:{}", fulfillment_plan.plan_id),
+        fabric_ref: input.fabric_ref.clone(),
+        host_ref: input.host_ref.clone(),
+        contract_ref: input.contract_ref.clone(),
+        source_plan_ref: fulfillment_plan.plan_id.clone(),
+        state: state.to_string(),
+        role_postures,
+        required_role_refs: normalize_refs(required_role_refs.to_vec()),
+        ready_role_refs: ready_role_refs.into_iter().collect(),
+        degraded_role_refs: degraded_role_refs.into_iter().collect(),
+        blocked_role_refs: blocked_role_refs.into_iter().collect(),
+        missing_role_refs: missing_role_refs_set.into_iter().collect(),
+        member_contribution_refs: member_contribution_refs.into_iter().collect(),
+        participant_refs: participant_refs.into_iter().collect(),
+        module_refs: module_refs.into_iter().collect(),
+        source_refs: source_refs.into_iter().collect(),
+        lifecycle_plan_refs: lifecycle_plan_refs.into_iter().collect(),
+        materialization_budget_refs: materialization_budget_refs.to_vec(),
+        association_handoff_ref: input.association_handoff_ref.clone(),
+        evidence_refs: topology_evidence_refs.into_iter().collect(),
+        blocked_reasons: fulfillment_plan.blocked_reasons.clone(),
+        safe_facts: json!({
+            "reducer": "host-fabric",
+            "sourcePlanRef": fulfillment_plan.plan_id,
+            "rolePostureCount": fulfillment_plan.required_role_refs.len()
+        }),
+        observed_at: input.observed_at,
+        expires_at: input.expires_at,
+    };
+    validate_host_fabric_topology_projection(&projection)?;
+    Ok(projection)
 }
 
 pub fn build_host_fabric_member_contribution(
@@ -945,6 +1127,14 @@ mod tests {
             reduction.fulfillment_plan.member_contribution_refs,
             vec!["fabric-contribution:service-manager"]
         );
+        assert_eq!(
+            reduction.topology_projection.source_plan_ref,
+            reduction.fulfillment_plan.plan_id
+        );
+        assert_eq!(
+            reduction.topology_projection.ready_role_refs,
+            vec!["role:hostServiceAdapter"]
+        );
         assert!(reduction.fulfillment_plan.missing_role_refs.is_empty());
         assert_eq!(reduction.ready_contribution_refs.len(), 1);
     }
@@ -977,6 +1167,10 @@ mod tests {
         );
         assert_eq!(
             reduction.fulfillment_plan.missing_role_refs,
+            vec!["role:hostServiceAdapter"]
+        );
+        assert_eq!(
+            reduction.topology_projection.missing_role_refs,
             vec!["role:hostServiceAdapter"]
         );
         assert!(
@@ -1077,6 +1271,10 @@ mod tests {
         );
         assert_eq!(
             reduction.fulfillment_plan.member_contribution_refs.len(),
+            roles.len()
+        );
+        assert_eq!(
+            reduction.topology_projection.role_postures.len(),
             roles.len()
         );
         assert!(
