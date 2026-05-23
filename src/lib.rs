@@ -1106,6 +1106,8 @@ pub fn reduce_host_fabric_control_decision(
         delegated_role_ref,
         state: state.to_string(),
         source_plan_ref: Some(plan.plan_id.clone()),
+        source_plan_observed_at: Some(plan.observed_at),
+        source_plan_expires_at: plan.expires_at,
         plan_state: Some(plan.state.clone()),
         execution_delegation_ref: input.execution_delegation_ref,
         authorization_refs: normalize_refs(authorization_refs),
@@ -1173,6 +1175,8 @@ pub fn reduce_host_fabric_adapter_execution_evidence(
         state: input.state,
         source_decision_ref: Some(decision.decision_id.clone()),
         source_plan_ref: Some(plan.plan_id.clone()),
+        source_plan_observed_at: Some(plan.observed_at),
+        source_plan_expires_at: plan.expires_at,
         source_bridge_ref: input.source_bridge_ref,
         delegated_role_ref: input
             .delegated_role_ref
