@@ -1041,12 +1041,17 @@ pub fn reduce_host_fabric_control_decision(
     require_ref(&input.operation_ref, "operationRef")?;
     require_ref(&input.subject_ref, "subjectRef")?;
 
-    let state = match plan.state.as_str() {
-        FABRIC_FULFILLMENT_PLAN_READY => FABRIC_CONTROL_DECISION_READY,
-        FABRIC_FULFILLMENT_PLAN_DEGRADED => FABRIC_CONTROL_DECISION_DEGRADED,
-        FABRIC_FULFILLMENT_PLAN_BLOCKED => FABRIC_CONTROL_DECISION_BLOCKED,
-        FABRIC_FULFILLMENT_PLAN_EXPIRED => FABRIC_CONTROL_DECISION_EXPIRED,
-        _ => FABRIC_CONTROL_DECISION_BLOCKED,
+    let input_blocked_reasons = input.blocked_reasons;
+    let state = if input_blocked_reasons.is_empty() {
+        match plan.state.as_str() {
+            FABRIC_FULFILLMENT_PLAN_READY => FABRIC_CONTROL_DECISION_READY,
+            FABRIC_FULFILLMENT_PLAN_DEGRADED => FABRIC_CONTROL_DECISION_DEGRADED,
+            FABRIC_FULFILLMENT_PLAN_BLOCKED => FABRIC_CONTROL_DECISION_BLOCKED,
+            FABRIC_FULFILLMENT_PLAN_EXPIRED => FABRIC_CONTROL_DECISION_EXPIRED,
+            _ => FABRIC_CONTROL_DECISION_BLOCKED,
+        }
+    } else {
+        FABRIC_CONTROL_DECISION_BLOCKED
     };
     let delegated_role_ref = input
         .delegated_role_ref
@@ -1059,8 +1064,7 @@ pub fn reduce_host_fabric_control_decision(
         ));
     }
     let mut blocked_reasons = BTreeSet::from_iter(
-        input
-            .blocked_reasons
+        input_blocked_reasons
             .into_iter()
             .chain(plan.blocked_reasons.clone()),
     );
