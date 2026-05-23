@@ -5,22 +5,24 @@ use constitute_protocol::{
     FABRIC_CONTRACT_TARGET_REGISTRY_BLOCKED, FABRIC_CONTRACT_TARGET_REGISTRY_READY,
     FABRIC_CONTRACT_TARGET_SLOT_AVAILABLE, FABRIC_CONTRACT_TARGET_SLOT_MISSING,
     FABRIC_FULFILLMENT_PLAN_BLOCKED, FABRIC_FULFILLMENT_PLAN_DEGRADED,
-    FABRIC_FULFILLMENT_PLAN_READY, FABRIC_LIFECYCLE_PLAN_BLOCKED, FABRIC_LIFECYCLE_PLAN_DEGRADED,
-    FABRIC_LIFECYCLE_PLAN_EXPIRED, FABRIC_MEMBER_CONTRIBUTION_ACCEPTED,
-    FABRIC_MEMBER_CONTRIBUTION_BLOCKED, FABRIC_MEMBER_CONTRIBUTION_CLAIMED,
-    FABRIC_MEMBER_CONTRIBUTION_DEGRADED, FABRIC_MEMBER_CONTRIBUTION_EXPIRED,
-    FABRIC_MEMBER_CONTRIBUTION_RELEASED, FABRIC_MEMBER_CONTRIBUTION_RUNNING,
-    FABRIC_MEMBER_CONTRIBUTION_SUPERSEDED, FABRIC_MEMBER_ROLE_DOMAIN_SERVICE,
-    FABRIC_MEMBER_ROLE_GATEWAY_ASSOCIATION, FABRIC_MEMBER_ROLE_PLATFORM_ADAPTER,
-    FABRIC_MEMBER_ROLE_RUNTIME, FABRIC_MEMBER_ROLE_SERVICE_EDGE_ADAPTER,
-    FABRIC_TOPOLOGY_ROLE_BLOCKED, FABRIC_TOPOLOGY_ROLE_DEGRADED, FABRIC_TOPOLOGY_ROLE_MISSING,
-    FABRIC_TOPOLOGY_ROLE_READY, HostFabricFulfillmentPlan, HostFabricMemberContribution,
-    HostFabricTopologyProjection, HostFabricTopologyRolePosture, LifecyclePlanPosture,
-    RECORD_CONTRACT_TARGET_REGISTRY_POSTURE, RECORD_HOST_FABRIC_FULFILLMENT_PLAN,
-    RECORD_HOST_FABRIC_MEMBER_CONTRIBUTION, RECORD_HOST_FABRIC_TOPOLOGY_PROJECTION,
-    ResourcePosture, validate_contract_target, validate_contract_target_registry_posture,
-    validate_host_fabric_fulfillment_plan, validate_host_fabric_member_contribution,
-    validate_host_fabric_topology_projection, validate_lifecycle_plan_posture,
+    FABRIC_FULFILLMENT_PLAN_READY, FABRIC_LIFECYCLE_DEPENDENCY_BLOCKED,
+    FABRIC_LIFECYCLE_DEPENDENCY_DEGRADED, FABRIC_LIFECYCLE_DEPENDENCY_MISSING,
+    FABRIC_LIFECYCLE_PLAN_BLOCKED, FABRIC_LIFECYCLE_PLAN_DEGRADED, FABRIC_LIFECYCLE_PLAN_EXPIRED,
+    FABRIC_MEMBER_CONTRIBUTION_ACCEPTED, FABRIC_MEMBER_CONTRIBUTION_BLOCKED,
+    FABRIC_MEMBER_CONTRIBUTION_CLAIMED, FABRIC_MEMBER_CONTRIBUTION_DEGRADED,
+    FABRIC_MEMBER_CONTRIBUTION_EXPIRED, FABRIC_MEMBER_CONTRIBUTION_RELEASED,
+    FABRIC_MEMBER_CONTRIBUTION_RUNNING, FABRIC_MEMBER_CONTRIBUTION_SUPERSEDED,
+    FABRIC_MEMBER_ROLE_DOMAIN_SERVICE, FABRIC_MEMBER_ROLE_GATEWAY_ASSOCIATION,
+    FABRIC_MEMBER_ROLE_PLATFORM_ADAPTER, FABRIC_MEMBER_ROLE_RUNTIME,
+    FABRIC_MEMBER_ROLE_SERVICE_EDGE_ADAPTER, FABRIC_TOPOLOGY_ROLE_BLOCKED,
+    FABRIC_TOPOLOGY_ROLE_DEGRADED, FABRIC_TOPOLOGY_ROLE_MISSING, FABRIC_TOPOLOGY_ROLE_READY,
+    HostFabricFulfillmentPlan, HostFabricMemberContribution, HostFabricTopologyProjection,
+    HostFabricTopologyRolePosture, LifecyclePlanPosture, RECORD_CONTRACT_TARGET_REGISTRY_POSTURE,
+    RECORD_HOST_FABRIC_FULFILLMENT_PLAN, RECORD_HOST_FABRIC_MEMBER_CONTRIBUTION,
+    RECORD_HOST_FABRIC_TOPOLOGY_PROJECTION, ResourcePosture, validate_contract_target,
+    validate_contract_target_registry_posture, validate_host_fabric_fulfillment_plan,
+    validate_host_fabric_member_contribution, validate_host_fabric_topology_projection,
+    validate_lifecycle_plan_posture,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -72,6 +74,7 @@ pub struct HostFabricReduction {
     pub blocked_contribution_refs: Vec<String>,
     pub filtered_contribution_refs: Vec<String>,
     pub lifecycle_plan_refs: Vec<String>,
+    pub dependency_edge_refs: Vec<String>,
     pub blocked_reasons: Vec<String>,
 }
 
@@ -519,6 +522,7 @@ pub fn reduce_host_fabric(input: HostFabricReductionInput) -> Result<HostFabricR
     let mut blocked_contribution_refs = BTreeSet::new();
     let mut filtered_contribution_refs = BTreeSet::new();
     let mut lifecycle_plan_refs = BTreeSet::new();
+    let mut dependency_edge_refs = BTreeSet::new();
     let mut blocked_reasons = BTreeSet::from_iter(input.blocked_reasons.clone());
 
     for contribution in &input.contributions {
@@ -581,6 +585,21 @@ pub fn reduce_host_fabric(input: HostFabricReductionInput) -> Result<HostFabricR
     for lifecycle_plan in &input.lifecycle_plans {
         validate_lifecycle_plan_posture(lifecycle_plan)?;
         lifecycle_plan_refs.insert(lifecycle_plan.lifecycle_plan_id.clone());
+        for edge in &lifecycle_plan.dependency_edges {
+            dependency_edge_refs.insert(edge.dependency_ref.clone());
+            if matches!(
+                edge.state.as_str(),
+                FABRIC_LIFECYCLE_DEPENDENCY_BLOCKED | FABRIC_LIFECYCLE_DEPENDENCY_MISSING
+            ) {
+                blocked_reasons.extend(edge.blocked_reasons.clone());
+                blocked_reasons.insert(format!(
+                    "hostFabric:lifecycleDependency:{}:{}",
+                    edge.state, edge.dependency_ref
+                ));
+            } else if edge.state == FABRIC_LIFECYCLE_DEPENDENCY_DEGRADED {
+                degraded_roles.insert(format!("dependency:{}", edge.dependency_ref));
+            }
+        }
         if matches!(
             lifecycle_plan.state.as_str(),
             FABRIC_LIFECYCLE_PLAN_BLOCKED | FABRIC_LIFECYCLE_PLAN_EXPIRED
@@ -611,6 +630,7 @@ pub fn reduce_host_fabric(input: HostFabricReductionInput) -> Result<HostFabricR
         .collect::<Vec<_>>();
     let missing_role_refs = missing_role_refs.into_iter().collect::<Vec<_>>();
     let blocked_reasons = blocked_reasons.into_iter().collect::<Vec<_>>();
+    let dependency_edge_refs = dependency_edge_refs.into_iter().collect::<Vec<_>>();
     let lifecycle_plan_refs = lifecycle_plan_refs.into_iter().collect::<Vec<_>>();
     let state = if !blocked_reasons.is_empty() {
         FABRIC_FULFILLMENT_PLAN_BLOCKED
@@ -650,7 +670,8 @@ pub fn reduce_host_fabric(input: HostFabricReductionInput) -> Result<HostFabricR
             "readyContributionCount": ready_contribution_refs.len(),
             "degradedContributionCount": degraded_contribution_refs.len(),
             "blockedContributionCount": blocked_contribution_refs.len(),
-            "filteredContributionCount": filtered_contribution_refs.len()
+            "filteredContributionCount": filtered_contribution_refs.len(),
+            "dependencyEdgeCount": dependency_edge_refs.len()
         }),
         observed_at,
         expires_at,
@@ -674,6 +695,7 @@ pub fn reduce_host_fabric(input: HostFabricReductionInput) -> Result<HostFabricR
         blocked_contribution_refs: blocked_contribution_refs.into_iter().collect(),
         filtered_contribution_refs: filtered_contribution_refs.into_iter().collect(),
         lifecycle_plan_refs,
+        dependency_edge_refs,
         blocked_reasons,
     })
 }
@@ -947,12 +969,14 @@ fn normalize_refs(values: Vec<String>) -> Vec<String> {
 mod tests {
     use super::*;
     use constitute_protocol::{
+        FABRIC_LIFECYCLE_DEPENDENCY_MISSING, FABRIC_LIFECYCLE_DEPENDENCY_READY,
         FABRIC_LIFECYCLE_PHASE_OBSERVE, FABRIC_LIFECYCLE_PHASE_READY, FABRIC_LIFECYCLE_PHASE_RUN,
         FABRIC_LIFECYCLE_PHASE_RUNNING, FABRIC_LIFECYCLE_PLAN_READY,
         FABRIC_MEMBER_ROLE_BUILD_PROCESSOR, FABRIC_MEMBER_ROLE_DOMAIN_SERVICE,
         FABRIC_MEMBER_ROLE_GATEWAY_ASSOCIATION, FABRIC_MEMBER_ROLE_HOST_SERVICE_ADAPTER,
         FABRIC_MEMBER_ROLE_PLATFORM_ADAPTER, FABRIC_MEMBER_ROLE_RUNTIME,
-        FABRIC_MEMBER_ROLE_SERVICE_EDGE_ADAPTER, FABRIC_MEMBER_ROLE_SURFACE, LifecyclePhasePosture,
+        FABRIC_MEMBER_ROLE_SERVICE_EDGE_ADAPTER, FABRIC_MEMBER_ROLE_SURFACE,
+        LifecycleDependencyEdge, LifecyclePhasePosture, RECORD_LIFECYCLE_DEPENDENCY_EDGE,
         RECORD_LIFECYCLE_PLAN_POSTURE,
     };
 
@@ -1061,6 +1085,7 @@ mod tests {
                 LifecyclePhasePosture {
                     phase: FABRIC_LIFECYCLE_PHASE_RUN.to_string(),
                     state: FABRIC_LIFECYCLE_PHASE_RUNNING.to_string(),
+                    dependency_refs: vec![],
                     evidence_refs: vec!["evidence:run".to_string()],
                     output_refs: vec!["service:lab-managed".to_string()],
                     blocked_reasons: vec![],
@@ -1069,12 +1094,14 @@ mod tests {
                 LifecyclePhasePosture {
                     phase: FABRIC_LIFECYCLE_PHASE_OBSERVE.to_string(),
                     state: FABRIC_LIFECYCLE_PHASE_READY.to_string(),
+                    dependency_refs: vec![],
                     evidence_refs: vec!["evidence:observe".to_string()],
                     output_refs: vec!["proof:service:health".to_string()],
                     blocked_reasons: vec![],
                     safe_facts: json!({ "phase": "observe" }),
                 },
             ],
+            dependency_edges: vec![],
             member_contribution_refs: vec!["fabric-contribution:service-manager".to_string()],
             evidence_refs: vec!["evidence:lifecycle".to_string()],
             release_refs: vec![],
@@ -1083,6 +1110,33 @@ mod tests {
             observed_at: 1_700_000_000,
             expires_at: Some(1_700_003_600),
         }
+    }
+
+    fn lifecycle_with_dependency(dependency_state: &str) -> LifecyclePlanPosture {
+        let mut lifecycle = lifecycle(FABRIC_LIFECYCLE_PLAN_READY);
+        let dependency_ref = "lifecycle-dependency:runtime:gateway".to_string();
+        lifecycle.phase_postures[0].dependency_refs = vec![dependency_ref.clone()];
+        lifecycle.dependency_edges = vec![LifecycleDependencyEdge {
+            kind: Some(RECORD_LIFECYCLE_DEPENDENCY_EDGE.to_string()),
+            dependency_ref,
+            source_ref: role_ref(FABRIC_MEMBER_ROLE_RUNTIME),
+            target_ref: role_ref(FABRIC_MEMBER_ROLE_GATEWAY_ASSOCIATION),
+            state: dependency_state.to_string(),
+            required: true,
+            order: Some(10),
+            evidence_refs: if dependency_state == FABRIC_LIFECYCLE_DEPENDENCY_READY {
+                vec!["evidence:dependency:gateway-ready".to_string()]
+            } else {
+                vec![]
+            },
+            blocked_reasons: if dependency_state == FABRIC_LIFECYCLE_DEPENDENCY_MISSING {
+                vec!["lifecycleDependency:missing:role:gatewayAssociation".to_string()]
+            } else {
+                vec![]
+            },
+            safe_facts: json!({ "dependency": "runtime-needs-gateway" }),
+        }];
+        lifecycle
     }
 
     fn input(contributions: Vec<HostFabricMemberContribution>) -> HostFabricReductionInput {
@@ -1096,7 +1150,7 @@ mod tests {
                 min_ready: 1,
             }],
             contributions,
-            lifecycle_plans: vec![lifecycle(FABRIC_LIFECYCLE_PLAN_READY)],
+            lifecycle_plans: vec![lifecycle_with_dependency(FABRIC_LIFECYCLE_DEPENDENCY_READY)],
             materialization_budget_refs: vec!["materialization-budget:service-manager".to_string()],
             known_missing_role_refs: vec![],
             evidence_refs: vec!["evidence:operator:fixture".to_string()],
@@ -1248,7 +1302,7 @@ mod tests {
                 })
                 .collect(),
             contributions,
-            lifecycle_plans: vec![lifecycle(FABRIC_LIFECYCLE_PLAN_READY)],
+            lifecycle_plans: vec![lifecycle_with_dependency(FABRIC_LIFECYCLE_DEPENDENCY_READY)],
             materialization_budget_refs: vec!["materialization-budget:dependency-knot".to_string()],
             known_missing_role_refs: vec![],
             evidence_refs: vec!["evidence:dependency-knot:fixture".to_string()],
@@ -1277,11 +1331,60 @@ mod tests {
             reduction.topology_projection.role_postures.len(),
             roles.len()
         );
+        assert_eq!(
+            reduction.dependency_edge_refs,
+            vec!["lifecycle-dependency:runtime:gateway"]
+        );
         assert!(
             reduction.fulfillment_plan.safe_facts["readyContributionCount"]
                 .as_u64()
                 .unwrap()
                 >= roles.len() as u64
+        );
+    }
+
+    #[test]
+    fn blocks_reduction_on_required_lifecycle_dependency_miss() {
+        let reduction = reduce_host_fabric(HostFabricReductionInput {
+            plan_id: "fabric-plan:dependency-missing".to_string(),
+            fabric_ref: "fabric:lab-gateway".to_string(),
+            host_ref: "host:lab-service-manager".to_string(),
+            contract_ref: "contract:host-fabric.dependency-knot@0.1.0".to_string(),
+            required_roles: vec![HostFabricRoleRequirement {
+                role_ref: role_ref(FABRIC_MEMBER_ROLE_RUNTIME),
+                min_ready: 1,
+            }],
+            contributions: vec![contribution_for_role(
+                "fabric-contribution:runtime",
+                FABRIC_MEMBER_ROLE_RUNTIME,
+                FABRIC_MEMBER_CONTRIBUTION_RUNNING,
+                "fabric:lab-gateway",
+                "host:lab-service-manager",
+            )],
+            lifecycle_plans: vec![lifecycle_with_dependency(
+                FABRIC_LIFECYCLE_DEPENDENCY_MISSING,
+            )],
+            materialization_budget_refs: vec!["materialization-budget:dependency-knot".to_string()],
+            known_missing_role_refs: vec![],
+            evidence_refs: vec!["evidence:dependency-knot:missing".to_string()],
+            blocked_reasons: vec![],
+            association_handoff_ref: Some(
+                "handoff:substrate:lab-gateway:initial-owner".to_string(),
+            ),
+            observed_at: 1_700_000_000,
+            expires_at: Some(1_700_003_600),
+        })
+        .expect("reduction");
+
+        assert_eq!(
+            reduction.fulfillment_plan.state,
+            FABRIC_FULFILLMENT_PLAN_BLOCKED
+        );
+        assert!(
+            reduction
+                .blocked_reasons
+                .iter()
+                .any(|reason| { reason.contains("hostFabric:lifecycleDependency:missing") })
         );
     }
 
