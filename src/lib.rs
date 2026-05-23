@@ -4,20 +4,23 @@ use constitute_protocol::{
     CARRIER_EDGE_ADAPTER_QUIC, CARRIER_EDGE_ADAPTER_RELAY, CARRIER_EDGE_ADAPTER_WEB_SOCKET,
     CARRIER_EDGE_ADAPTER_WORKER, CARRIER_EDGE_BACKPRESSURE_BLOCKED,
     CARRIER_EDGE_BACKPRESSURE_CLEAR, CARRIER_EDGE_BACKPRESSURE_DEGRADED,
-    CARRIER_EDGE_REQUIREMENT_ACTIONABLE, CARRIER_EDGE_REQUIREMENT_BLOCKED,
-    CARRIER_EDGE_SELECTION_ACTIONABLE, CARRIER_EDGE_SELECTION_BLOCKED,
-    CARRIER_EDGE_SELECTION_DEGRADED, CarrierEdgeRequirement, CarrierEdgeSelection, ContractTarget,
-    ContractTargetRegistryPosture, ContractTargetSlotPosture, FABRIC_ADAPTER_EXECUTION_BLOCKED,
-    FABRIC_ADAPTER_EXECUTION_FAILED, FABRIC_CONTRACT_TARGET_PLATFORM_FIT_COMPATIBLE,
-    FABRIC_CONTRACT_TARGET_PLATFORM_FIT_UNKNOWN, FABRIC_CONTRACT_TARGET_REGISTRY_BLOCKED,
-    FABRIC_CONTRACT_TARGET_REGISTRY_READY, FABRIC_CONTRACT_TARGET_SLOT_AVAILABLE,
-    FABRIC_CONTRACT_TARGET_SLOT_MISSING, FABRIC_CONTROL_DECISION_BLOCKED,
-    FABRIC_CONTROL_DECISION_DEGRADED, FABRIC_CONTROL_DECISION_EXPIRED,
-    FABRIC_CONTROL_DECISION_READY, FABRIC_FULFILLMENT_PLAN_BLOCKED,
-    FABRIC_FULFILLMENT_PLAN_DEGRADED, FABRIC_FULFILLMENT_PLAN_EXPIRED,
-    FABRIC_FULFILLMENT_PLAN_READY, FABRIC_LIFECYCLE_DEPENDENCY_BLOCKED,
-    FABRIC_LIFECYCLE_DEPENDENCY_DEGRADED, FABRIC_LIFECYCLE_DEPENDENCY_MISSING,
-    FABRIC_LIFECYCLE_PLAN_BLOCKED, FABRIC_LIFECYCLE_PLAN_DEGRADED, FABRIC_LIFECYCLE_PLAN_EXPIRED,
+    CARRIER_EDGE_NETWORK_EXTERNAL_NETWORK, CARRIER_EDGE_NETWORK_HOST_LOCAL,
+    CARRIER_EDGE_NETWORK_LOCAL_NETWORK, CARRIER_EDGE_NETWORK_LOOPBACK,
+    CARRIER_EDGE_NETWORK_PROCESS_LOCAL, CARRIER_EDGE_REQUIREMENT_ACTIONABLE,
+    CARRIER_EDGE_REQUIREMENT_BLOCKED, CARRIER_EDGE_SELECTION_ACTIONABLE,
+    CARRIER_EDGE_SELECTION_BLOCKED, CARRIER_EDGE_SELECTION_DEGRADED, CarrierEdgeRequirement,
+    CarrierEdgeSelection, ContractTarget, ContractTargetRegistryPosture, ContractTargetSlotPosture,
+    FABRIC_ADAPTER_EXECUTION_BLOCKED, FABRIC_ADAPTER_EXECUTION_FAILED,
+    FABRIC_CONTRACT_TARGET_PLATFORM_FIT_COMPATIBLE, FABRIC_CONTRACT_TARGET_PLATFORM_FIT_UNKNOWN,
+    FABRIC_CONTRACT_TARGET_REGISTRY_BLOCKED, FABRIC_CONTRACT_TARGET_REGISTRY_READY,
+    FABRIC_CONTRACT_TARGET_SLOT_AVAILABLE, FABRIC_CONTRACT_TARGET_SLOT_MISSING,
+    FABRIC_CONTROL_DECISION_BLOCKED, FABRIC_CONTROL_DECISION_DEGRADED,
+    FABRIC_CONTROL_DECISION_EXPIRED, FABRIC_CONTROL_DECISION_READY,
+    FABRIC_FULFILLMENT_PLAN_BLOCKED, FABRIC_FULFILLMENT_PLAN_DEGRADED,
+    FABRIC_FULFILLMENT_PLAN_EXPIRED, FABRIC_FULFILLMENT_PLAN_READY,
+    FABRIC_LIFECYCLE_DEPENDENCY_BLOCKED, FABRIC_LIFECYCLE_DEPENDENCY_DEGRADED,
+    FABRIC_LIFECYCLE_DEPENDENCY_MISSING, FABRIC_LIFECYCLE_PLAN_BLOCKED,
+    FABRIC_LIFECYCLE_PLAN_DEGRADED, FABRIC_LIFECYCLE_PLAN_EXPIRED,
     FABRIC_MEMBER_CONTRIBUTION_ACCEPTED, FABRIC_MEMBER_CONTRIBUTION_BLOCKED,
     FABRIC_MEMBER_CONTRIBUTION_CLAIMED, FABRIC_MEMBER_CONTRIBUTION_DEGRADED,
     FABRIC_MEMBER_CONTRIBUTION_EXPIRED, FABRIC_MEMBER_CONTRIBUTION_RELEASED,
@@ -576,6 +579,8 @@ pub fn reduce_carrier_edge_selection_from_fabric(
                 .cloned()
                 .unwrap_or_else(|| CARRIER_EDGE_ADAPTER_WEB_SOCKET.to_string())
         });
+    let network_sensitivity = carrier_edge_network_sensitivity(&selected_adapter_kind).to_string();
+    let session_binding_ref = format!("carrier-binding:{}", input.selection_id);
 
     let requirement = CarrierEdgeRequirement {
         kind: Some(RECORD_CARRIER_EDGE_REQUIREMENT.to_string()),
@@ -597,6 +602,7 @@ pub fn reduce_carrier_edge_selection_from_fabric(
         },
         candidate_adapter_refs: candidate_adapter_refs.clone(),
         policy_ref: input.policy_ref.clone(),
+        network_sensitivity: Some(network_sensitivity.clone()),
         state: requirement_state.to_string(),
         safe_facts: json!({
             "reducer": "host-fabric-carrier-edge",
@@ -604,6 +610,8 @@ pub fn reduce_carrier_edge_selection_from_fabric(
             "selectedAdapterKind": selected_adapter_kind
         }),
         evidence_refs: evidence_refs.clone(),
+        proof_substrate_refs: vec![],
+        resource_posture_refs: vec![],
         blocked_reasons: blocked_reasons.clone(),
         issued_at: input.observed_at,
         expires_at: input.expires_at,
@@ -621,6 +629,8 @@ pub fn reduce_carrier_edge_selection_from_fabric(
         candidate_adapter_refs: candidate_adapter_refs.clone(),
         fallback_refs: normalize_refs(fallback_refs),
         selector_ref: Some("selector:host-fabric-carrier-edge".to_string()),
+        session_binding_ref: Some(session_binding_ref),
+        network_sensitivity: Some(network_sensitivity),
         state: state.to_string(),
         backpressure_state: Some(backpressure_state.to_string()),
         safe_facts: json!({
@@ -628,6 +638,8 @@ pub fn reduce_carrier_edge_selection_from_fabric(
             "candidateCount": candidate_adapter_refs.len()
         }),
         evidence_refs,
+        proof_substrate_refs: vec![],
+        resource_posture_refs: vec![],
         blocked_reasons: blocked_reasons.clone(),
         observed_at: input.observed_at,
         expires_at: input.expires_at,
@@ -1491,6 +1503,21 @@ fn normalize_refs(values: Vec<String>) -> Vec<String> {
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
+}
+
+fn carrier_edge_network_sensitivity(adapter_kind: &str) -> &'static str {
+    match adapter_kind {
+        CARRIER_EDGE_ADAPTER_WORKER => CARRIER_EDGE_NETWORK_PROCESS_LOCAL,
+        CARRIER_EDGE_ADAPTER_IPC | CARRIER_EDGE_ADAPTER_NAMED_PIPE => {
+            CARRIER_EDGE_NETWORK_HOST_LOCAL
+        }
+        CARRIER_EDGE_ADAPTER_LOOPBACK => CARRIER_EDGE_NETWORK_LOOPBACK,
+        CARRIER_EDGE_ADAPTER_WEB_SOCKET | CARRIER_EDGE_ADAPTER_QUIC => {
+            CARRIER_EDGE_NETWORK_LOCAL_NETWORK
+        }
+        CARRIER_EDGE_ADAPTER_RELAY => CARRIER_EDGE_NETWORK_EXTERNAL_NETWORK,
+        _ => CARRIER_EDGE_NETWORK_EXTERNAL_NETWORK,
+    }
 }
 
 #[cfg(test)]
