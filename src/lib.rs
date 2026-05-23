@@ -1758,7 +1758,9 @@ mod tests {
             consumer_ref: Some("runtime:browser".to_string()),
             route_association_ref: Some("association:gateway:lab".to_string()),
             policy_ref: Some("policy:carrier:default".to_string()),
-            required_capability_refs: vec!["swarm.edge.attach".to_string()],
+            required_capability_refs: vec![
+                constitute_protocol::CAPABILITY_SWARM_EDGE_ATTACH.to_string(),
+            ],
             candidates: vec![
                 CarrierEdgeCandidate {
                     adapter_ref: "adapter:gateway:websocket".to_string(),
