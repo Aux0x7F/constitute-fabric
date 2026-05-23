@@ -7,11 +7,14 @@ use constitute_protocol::{
     CARRIER_EDGE_REQUIREMENT_ACTIONABLE, CARRIER_EDGE_REQUIREMENT_BLOCKED,
     CARRIER_EDGE_SELECTION_ACTIONABLE, CARRIER_EDGE_SELECTION_BLOCKED,
     CARRIER_EDGE_SELECTION_DEGRADED, CarrierEdgeRequirement, CarrierEdgeSelection, ContractTarget,
-    ContractTargetRegistryPosture, ContractTargetSlotPosture,
-    FABRIC_CONTRACT_TARGET_PLATFORM_FIT_COMPATIBLE, FABRIC_CONTRACT_TARGET_PLATFORM_FIT_UNKNOWN,
-    FABRIC_CONTRACT_TARGET_REGISTRY_BLOCKED, FABRIC_CONTRACT_TARGET_REGISTRY_READY,
-    FABRIC_CONTRACT_TARGET_SLOT_AVAILABLE, FABRIC_CONTRACT_TARGET_SLOT_MISSING,
-    FABRIC_FULFILLMENT_PLAN_BLOCKED, FABRIC_FULFILLMENT_PLAN_DEGRADED,
+    ContractTargetRegistryPosture, ContractTargetSlotPosture, FABRIC_ADAPTER_EXECUTION_BLOCKED,
+    FABRIC_ADAPTER_EXECUTION_FAILED, FABRIC_CONTRACT_TARGET_PLATFORM_FIT_COMPATIBLE,
+    FABRIC_CONTRACT_TARGET_PLATFORM_FIT_UNKNOWN, FABRIC_CONTRACT_TARGET_REGISTRY_BLOCKED,
+    FABRIC_CONTRACT_TARGET_REGISTRY_READY, FABRIC_CONTRACT_TARGET_SLOT_AVAILABLE,
+    FABRIC_CONTRACT_TARGET_SLOT_MISSING, FABRIC_CONTROL_DECISION_BLOCKED,
+    FABRIC_CONTROL_DECISION_DEGRADED, FABRIC_CONTROL_DECISION_EXPIRED,
+    FABRIC_CONTROL_DECISION_READY, FABRIC_FULFILLMENT_PLAN_BLOCKED,
+    FABRIC_FULFILLMENT_PLAN_DEGRADED, FABRIC_FULFILLMENT_PLAN_EXPIRED,
     FABRIC_FULFILLMENT_PLAN_READY, FABRIC_LIFECYCLE_DEPENDENCY_BLOCKED,
     FABRIC_LIFECYCLE_DEPENDENCY_DEGRADED, FABRIC_LIFECYCLE_DEPENDENCY_MISSING,
     FABRIC_LIFECYCLE_PLAN_BLOCKED, FABRIC_LIFECYCLE_PLAN_DEGRADED, FABRIC_LIFECYCLE_PLAN_EXPIRED,
@@ -23,15 +26,17 @@ use constitute_protocol::{
     FABRIC_MEMBER_ROLE_PLATFORM_ADAPTER, FABRIC_MEMBER_ROLE_RUNTIME,
     FABRIC_MEMBER_ROLE_SERVICE_EDGE_ADAPTER, FABRIC_TOPOLOGY_ROLE_BLOCKED,
     FABRIC_TOPOLOGY_ROLE_DEGRADED, FABRIC_TOPOLOGY_ROLE_MISSING, FABRIC_TOPOLOGY_ROLE_READY,
-    HostFabricFulfillmentPlan, HostFabricMemberContribution, HostFabricTopologyProjection,
-    HostFabricTopologyRolePosture, LifecyclePlanPosture, RECORD_CARRIER_EDGE_REQUIREMENT,
-    RECORD_CARRIER_EDGE_SELECTION, RECORD_CONTRACT_TARGET_REGISTRY_POSTURE,
-    RECORD_HOST_FABRIC_FULFILLMENT_PLAN, RECORD_HOST_FABRIC_MEMBER_CONTRIBUTION,
-    RECORD_HOST_FABRIC_TOPOLOGY_PROJECTION, ResourcePosture, validate_carrier_edge_requirement,
-    validate_carrier_edge_selection, validate_contract_target,
-    validate_contract_target_registry_posture, validate_host_fabric_fulfillment_plan,
-    validate_host_fabric_member_contribution, validate_host_fabric_topology_projection,
-    validate_lifecycle_plan_posture,
+    HostFabricAdapterExecutionEvidence, HostFabricControlDecision, HostFabricFulfillmentPlan,
+    HostFabricMemberContribution, HostFabricTopologyProjection, HostFabricTopologyRolePosture,
+    LifecyclePlanPosture, RECORD_CARRIER_EDGE_REQUIREMENT, RECORD_CARRIER_EDGE_SELECTION,
+    RECORD_CONTRACT_TARGET_REGISTRY_POSTURE, RECORD_HOST_FABRIC_ADAPTER_EXECUTION_EVIDENCE,
+    RECORD_HOST_FABRIC_CONTROL_DECISION, RECORD_HOST_FABRIC_FULFILLMENT_PLAN,
+    RECORD_HOST_FABRIC_MEMBER_CONTRIBUTION, RECORD_HOST_FABRIC_TOPOLOGY_PROJECTION,
+    ResourcePosture, validate_carrier_edge_requirement, validate_carrier_edge_selection,
+    validate_contract_target, validate_contract_target_registry_posture,
+    validate_host_fabric_adapter_execution_evidence, validate_host_fabric_control_decision,
+    validate_host_fabric_fulfillment_plan, validate_host_fabric_member_contribution,
+    validate_host_fabric_topology_projection, validate_lifecycle_plan_posture,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -85,6 +90,74 @@ pub struct HostFabricReduction {
     pub lifecycle_plan_refs: Vec<String>,
     pub dependency_edge_refs: Vec<String>,
     pub blocked_reasons: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostFabricControlDecisionInput {
+    pub decision_id: String,
+    pub operation_ref: String,
+    pub subject_ref: String,
+    #[serde(default)]
+    pub control_owner_ref: Option<String>,
+    #[serde(default)]
+    pub delegated_role_ref: Option<String>,
+    #[serde(default)]
+    pub execution_delegation_ref: Option<String>,
+    #[serde(default)]
+    pub authorization_refs: Vec<String>,
+    #[serde(default)]
+    pub fallback_refs: Vec<String>,
+    #[serde(default)]
+    pub quarantine_refs: Vec<String>,
+    #[serde(default)]
+    pub rollback_ref: Option<String>,
+    #[serde(default)]
+    pub release_refs: Vec<String>,
+    #[serde(default)]
+    pub evidence_refs: Vec<String>,
+    #[serde(default)]
+    pub blocked_reasons: Vec<String>,
+    pub observed_at: u64,
+    pub expires_at: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostFabricAdapterExecutionInput {
+    pub evidence_id: String,
+    pub adapter_ref: String,
+    pub state: String,
+    #[serde(default)]
+    pub source_bridge_ref: Option<String>,
+    #[serde(default)]
+    pub delegated_role_ref: Option<String>,
+    #[serde(default)]
+    pub action_authority_refs: Vec<String>,
+    #[serde(default)]
+    pub evidence_requirement_refs: Vec<String>,
+    #[serde(default)]
+    pub input_refs: Vec<String>,
+    #[serde(default)]
+    pub output_refs: Vec<String>,
+    #[serde(default)]
+    pub fallback_refs: Vec<String>,
+    #[serde(default)]
+    pub quarantine_refs: Vec<String>,
+    #[serde(default)]
+    pub rollback_refs: Vec<String>,
+    #[serde(default)]
+    pub release_refs: Vec<String>,
+    #[serde(default)]
+    pub cleanup_refs: Vec<String>,
+    #[serde(default)]
+    pub blocked_reasons: Vec<String>,
+    #[serde(default)]
+    pub evidence_refs: Vec<String>,
+    #[serde(default)]
+    pub safe_facts: serde_json::Value,
+    pub observed_at: u64,
+    pub expires_at: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -959,6 +1032,186 @@ pub fn reduce_host_fabric(input: HostFabricReductionInput) -> Result<HostFabricR
     })
 }
 
+pub fn reduce_host_fabric_control_decision(
+    plan: &HostFabricFulfillmentPlan,
+    input: HostFabricControlDecisionInput,
+) -> Result<HostFabricControlDecision> {
+    validate_host_fabric_fulfillment_plan(plan)?;
+    require_ref(&input.decision_id, "decisionId")?;
+    require_ref(&input.operation_ref, "operationRef")?;
+    require_ref(&input.subject_ref, "subjectRef")?;
+
+    let state = match plan.state.as_str() {
+        FABRIC_FULFILLMENT_PLAN_READY => FABRIC_CONTROL_DECISION_READY,
+        FABRIC_FULFILLMENT_PLAN_DEGRADED => FABRIC_CONTROL_DECISION_DEGRADED,
+        FABRIC_FULFILLMENT_PLAN_BLOCKED => FABRIC_CONTROL_DECISION_BLOCKED,
+        FABRIC_FULFILLMENT_PLAN_EXPIRED => FABRIC_CONTROL_DECISION_EXPIRED,
+        _ => FABRIC_CONTROL_DECISION_BLOCKED,
+    };
+    let delegated_role_ref = input
+        .delegated_role_ref
+        .or_else(|| plan.delegated_role_refs.first().cloned());
+    let mut authorization_refs = input.authorization_refs;
+    if authorization_refs.is_empty() && state == FABRIC_CONTROL_DECISION_READY {
+        authorization_refs.push(format!(
+            "authorization:host-fabric:{}:{}",
+            plan.plan_id, input.operation_ref
+        ));
+    }
+    let mut blocked_reasons = BTreeSet::from_iter(
+        input
+            .blocked_reasons
+            .into_iter()
+            .chain(plan.blocked_reasons.clone()),
+    );
+    if state == FABRIC_CONTROL_DECISION_DEGRADED && blocked_reasons.is_empty() {
+        blocked_reasons.insert(format!("hostFabric:plan:degraded:{}", plan.plan_id));
+    }
+    if state == FABRIC_CONTROL_DECISION_BLOCKED && blocked_reasons.is_empty() {
+        blocked_reasons.insert(format!("hostFabric:plan:blocked:{}", plan.plan_id));
+    }
+    if state == FABRIC_CONTROL_DECISION_EXPIRED && blocked_reasons.is_empty() {
+        blocked_reasons.insert(format!("hostFabric:plan:expired:{}", plan.plan_id));
+    }
+    let mut evidence_refs = input.evidence_refs;
+    evidence_refs.extend(plan.evidence_refs.clone());
+    evidence_refs.push(format!(
+        "evidence:host-fabric-control:{}",
+        input.decision_id
+    ));
+
+    let decision = HostFabricControlDecision {
+        kind: Some(RECORD_HOST_FABRIC_CONTROL_DECISION.to_string()),
+        decision_id: input.decision_id,
+        fabric_ref: plan.fabric_ref.clone(),
+        host_ref: plan.host_ref.clone(),
+        operation_ref: input.operation_ref,
+        subject_ref: input.subject_ref,
+        control_owner_ref: input
+            .control_owner_ref
+            .unwrap_or_else(|| plan.fabric_ref.clone()),
+        delegated_role_ref,
+        state: state.to_string(),
+        source_plan_ref: Some(plan.plan_id.clone()),
+        plan_state: Some(plan.state.clone()),
+        execution_delegation_ref: input.execution_delegation_ref,
+        authorization_refs: normalize_refs(authorization_refs),
+        fallback_refs: if input.fallback_refs.is_empty() {
+            plan.fallback_refs.clone()
+        } else {
+            normalize_refs(input.fallback_refs)
+        },
+        quarantine_refs: if input.quarantine_refs.is_empty() {
+            plan.quarantine_refs.clone()
+        } else {
+            normalize_refs(input.quarantine_refs)
+        },
+        rollback_ref: input
+            .rollback_ref
+            .or_else(|| plan.rollback_refs.first().cloned()),
+        release_refs: normalize_refs(input.release_refs),
+        blocked_reasons: blocked_reasons.into_iter().collect(),
+        evidence_refs: normalize_refs(evidence_refs),
+        safe_facts: json!({
+            "reducer": "host-fabric",
+            "sourcePlanRef": plan.plan_id,
+            "planState": plan.state
+        }),
+        observed_at: input.observed_at,
+        expires_at: input.expires_at,
+    };
+    validate_host_fabric_control_decision(&decision)?;
+    Ok(decision)
+}
+
+pub fn reduce_host_fabric_adapter_execution_evidence(
+    plan: &HostFabricFulfillmentPlan,
+    decision: &HostFabricControlDecision,
+    input: HostFabricAdapterExecutionInput,
+) -> Result<HostFabricAdapterExecutionEvidence> {
+    validate_host_fabric_fulfillment_plan(plan)?;
+    validate_host_fabric_control_decision(decision)?;
+    require_ref(&input.evidence_id, "evidenceId")?;
+    require_ref(&input.adapter_ref, "adapterRef")?;
+    require_ref(&input.state, "state")?;
+
+    let mut blocked_reasons = BTreeSet::from_iter(input.blocked_reasons);
+    if matches!(
+        input.state.as_str(),
+        FABRIC_ADAPTER_EXECUTION_BLOCKED | FABRIC_ADAPTER_EXECUTION_FAILED
+    ) && blocked_reasons.is_empty()
+    {
+        blocked_reasons.insert(format!(
+            "hostFabric:adapterExecution:{}:{}",
+            input.state, input.evidence_id
+        ));
+    }
+    let mut evidence_refs = input.evidence_refs;
+    evidence_refs.extend(decision.evidence_refs.clone());
+    evidence_refs.push(format!(
+        "evidence:host-fabric-adapter-execution:{}",
+        input.evidence_id
+    ));
+
+    let evidence = HostFabricAdapterExecutionEvidence {
+        kind: Some(RECORD_HOST_FABRIC_ADAPTER_EXECUTION_EVIDENCE.to_string()),
+        evidence_id: input.evidence_id,
+        fabric_ref: plan.fabric_ref.clone(),
+        host_ref: plan.host_ref.clone(),
+        adapter_ref: input.adapter_ref,
+        subject_ref: decision.subject_ref.clone(),
+        operation_ref: decision.operation_ref.clone(),
+        state: input.state,
+        source_decision_ref: Some(decision.decision_id.clone()),
+        source_plan_ref: Some(plan.plan_id.clone()),
+        source_bridge_ref: input.source_bridge_ref,
+        delegated_role_ref: input
+            .delegated_role_ref
+            .or_else(|| decision.delegated_role_ref.clone()),
+        authorization_refs: decision.authorization_refs.clone(),
+        action_authority_refs: if input.action_authority_refs.is_empty() {
+            plan.action_authority_refs.clone()
+        } else {
+            normalize_refs(input.action_authority_refs)
+        },
+        evidence_requirement_refs: if input.evidence_requirement_refs.is_empty() {
+            plan.evidence_requirement_refs.clone()
+        } else {
+            normalize_refs(input.evidence_requirement_refs)
+        },
+        input_refs: normalize_refs(input.input_refs),
+        output_refs: normalize_refs(input.output_refs),
+        fallback_refs: if input.fallback_refs.is_empty() {
+            decision.fallback_refs.clone()
+        } else {
+            normalize_refs(input.fallback_refs)
+        },
+        quarantine_refs: if input.quarantine_refs.is_empty() {
+            decision.quarantine_refs.clone()
+        } else {
+            normalize_refs(input.quarantine_refs)
+        },
+        rollback_refs: if input.rollback_refs.is_empty() {
+            plan.rollback_refs.clone()
+        } else {
+            normalize_refs(input.rollback_refs)
+        },
+        release_refs: if input.release_refs.is_empty() {
+            decision.release_refs.clone()
+        } else {
+            normalize_refs(input.release_refs)
+        },
+        cleanup_refs: normalize_refs(input.cleanup_refs),
+        blocked_reasons: blocked_reasons.into_iter().collect(),
+        evidence_refs: normalize_refs(evidence_refs),
+        safe_facts: input.safe_facts,
+        observed_at: input.observed_at,
+        expires_at: input.expires_at,
+    };
+    validate_host_fabric_adapter_execution_evidence(&evidence)?;
+    Ok(evidence)
+}
+
 fn reduce_host_fabric_topology_projection(
     input: &HostFabricReductionInput,
     fulfillment_plan: &HostFabricFulfillmentPlan,
@@ -1228,15 +1481,15 @@ fn normalize_refs(values: Vec<String>) -> Vec<String> {
 mod tests {
     use super::*;
     use constitute_protocol::{
-        FABRIC_LIFECYCLE_DEPENDENCY_MISSING, FABRIC_LIFECYCLE_DEPENDENCY_READY,
-        FABRIC_LIFECYCLE_PHASE_OBSERVE, FABRIC_LIFECYCLE_PHASE_READY, FABRIC_LIFECYCLE_PHASE_RUN,
-        FABRIC_LIFECYCLE_PHASE_RUNNING, FABRIC_LIFECYCLE_PLAN_READY,
-        FABRIC_MEMBER_ROLE_BUILD_PROCESSOR, FABRIC_MEMBER_ROLE_DOMAIN_SERVICE,
-        FABRIC_MEMBER_ROLE_GATEWAY_ASSOCIATION, FABRIC_MEMBER_ROLE_HOST_SERVICE_ADAPTER,
-        FABRIC_MEMBER_ROLE_PLATFORM_ADAPTER, FABRIC_MEMBER_ROLE_RUNTIME,
-        FABRIC_MEMBER_ROLE_SERVICE_EDGE_ADAPTER, FABRIC_MEMBER_ROLE_SURFACE,
-        LifecycleDependencyEdge, LifecyclePhasePosture, RECORD_LIFECYCLE_DEPENDENCY_EDGE,
-        RECORD_LIFECYCLE_PLAN_POSTURE,
+        FABRIC_ADAPTER_EXECUTION_SUCCEEDED, FABRIC_LIFECYCLE_DEPENDENCY_MISSING,
+        FABRIC_LIFECYCLE_DEPENDENCY_READY, FABRIC_LIFECYCLE_PHASE_OBSERVE,
+        FABRIC_LIFECYCLE_PHASE_READY, FABRIC_LIFECYCLE_PHASE_RUN, FABRIC_LIFECYCLE_PHASE_RUNNING,
+        FABRIC_LIFECYCLE_PLAN_READY, FABRIC_MEMBER_ROLE_BUILD_PROCESSOR,
+        FABRIC_MEMBER_ROLE_DOMAIN_SERVICE, FABRIC_MEMBER_ROLE_GATEWAY_ASSOCIATION,
+        FABRIC_MEMBER_ROLE_HOST_SERVICE_ADAPTER, FABRIC_MEMBER_ROLE_PLATFORM_ADAPTER,
+        FABRIC_MEMBER_ROLE_RUNTIME, FABRIC_MEMBER_ROLE_SERVICE_EDGE_ADAPTER,
+        FABRIC_MEMBER_ROLE_SURFACE, LifecycleDependencyEdge, LifecyclePhasePosture,
+        RECORD_LIFECYCLE_DEPENDENCY_EDGE, RECORD_LIFECYCLE_PLAN_POSTURE,
     };
 
     const MEMBER_REF: &str = "4a29ff60c5c3837e9e20555bfeb2a046be3eb140818144628691fcf7efb1d2f1";
@@ -1450,6 +1703,88 @@ mod tests {
         );
         assert!(reduction.fulfillment_plan.missing_role_refs.is_empty());
         assert_eq!(reduction.ready_contribution_refs.len(), 1);
+    }
+
+    #[test]
+    fn reduces_ready_plan_into_authorized_adapter_execution() {
+        let reduction = reduce_host_fabric(input(vec![contribution(
+            "fabric-contribution:service-manager",
+            FABRIC_MEMBER_CONTRIBUTION_RUNNING,
+            "fabric:lab-gateway",
+            "host:lab-service-manager",
+        )]))
+        .expect("reduction");
+
+        let decision = reduce_host_fabric_control_decision(
+            &reduction.fulfillment_plan,
+            HostFabricControlDecisionInput {
+                decision_id: "fabric-control:service-manager:health-check".to_string(),
+                operation_ref: "operation:service-manager:health-check".to_string(),
+                subject_ref: "service:manager".to_string(),
+                control_owner_ref: None,
+                delegated_role_ref: Some(role_ref(FABRIC_MEMBER_ROLE_HOST_SERVICE_ADAPTER)),
+                execution_delegation_ref: Some(
+                    "delegation:host-service-adapter:health-check".to_string(),
+                ),
+                authorization_refs: vec![],
+                fallback_refs: vec![],
+                quarantine_refs: vec![],
+                rollback_ref: None,
+                release_refs: vec!["release:service-manager:health-check".to_string()],
+                evidence_refs: vec!["evidence:operator:health-check-request".to_string()],
+                blocked_reasons: vec![],
+                observed_at: 1_700_000_001,
+                expires_at: Some(1_700_000_061),
+            },
+        )
+        .expect("control decision");
+
+        assert_eq!(decision.state, FABRIC_CONTROL_DECISION_READY);
+        assert_eq!(
+            decision.source_plan_ref.as_deref(),
+            Some(reduction.fulfillment_plan.plan_id.as_str())
+        );
+        assert!(!decision.authorization_refs.is_empty());
+
+        let execution = reduce_host_fabric_adapter_execution_evidence(
+            &reduction.fulfillment_plan,
+            &decision,
+            HostFabricAdapterExecutionInput {
+                evidence_id: "adapter-execution:service-manager:health-check".to_string(),
+                adapter_ref: "adapter:host-service:windows-service-control".to_string(),
+                state: FABRIC_ADAPTER_EXECUTION_SUCCEEDED.to_string(),
+                source_bridge_ref: Some("legacy-bridge:service-manager:dry-run".to_string()),
+                delegated_role_ref: None,
+                action_authority_refs: vec![],
+                evidence_requirement_refs: vec![],
+                input_refs: vec![decision.operation_ref.clone()],
+                output_refs: vec!["evidence:service-manager:health-check:ok".to_string()],
+                fallback_refs: vec![],
+                quarantine_refs: vec![],
+                rollback_refs: vec![],
+                release_refs: vec![],
+                cleanup_refs: vec!["cleanup:service-manager:health-check".to_string()],
+                blocked_reasons: vec![],
+                evidence_refs: vec!["evidence:adapter:health-check:ok".to_string()],
+                safe_facts: json!({ "operation": "healthCheck", "dryRun": true }),
+                observed_at: 1_700_000_002,
+                expires_at: Some(1_700_000_062),
+            },
+        )
+        .expect("adapter execution evidence");
+
+        assert_eq!(execution.state, FABRIC_ADAPTER_EXECUTION_SUCCEEDED);
+        assert_eq!(
+            execution.source_decision_ref.as_deref(),
+            Some(decision.decision_id.as_str())
+        );
+        assert_eq!(execution.authorization_refs, decision.authorization_refs);
+        assert!(
+            execution
+                .output_refs
+                .iter()
+                .any(|reference| { reference == "evidence:service-manager:health-check:ok" })
+        );
     }
 
     #[test]
