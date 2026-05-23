@@ -1174,9 +1174,12 @@ pub fn reduce_host_fabric_adapter_execution_evidence(
         operation_ref: decision.operation_ref.clone(),
         state: input.state,
         source_decision_ref: Some(decision.decision_id.clone()),
-        source_plan_ref: Some(plan.plan_id.clone()),
-        source_plan_observed_at: Some(plan.observed_at),
-        source_plan_expires_at: plan.expires_at,
+        source_plan_ref: decision.source_plan_ref.clone(),
+        source_plan_observed_at: decision.source_plan_ref.as_ref().map(|_| plan.observed_at),
+        source_plan_expires_at: decision
+            .source_plan_ref
+            .as_ref()
+            .and_then(|_| plan.expires_at),
         source_bridge_ref: input.source_bridge_ref,
         delegated_role_ref: input
             .delegated_role_ref
