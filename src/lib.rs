@@ -39,7 +39,7 @@ use constitute_protocol::{
     validate_host_fabric_topology_projection, validate_lifecycle_plan_posture,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const DEFAULT_MATERIALIZATION_BUDGET_REF: &str = "materialization-budget:host-fabric";
@@ -118,6 +118,8 @@ pub struct HostFabricControlDecisionInput {
     pub evidence_refs: Vec<String>,
     #[serde(default)]
     pub blocked_reasons: Vec<String>,
+    #[serde(default)]
+    pub safe_facts: serde_json::Value,
     pub observed_at: u64,
     pub expires_at: Option<u64>,
 }
@@ -1083,6 +1085,13 @@ pub fn reduce_host_fabric_control_decision(
         "evidence:host-fabric-control:{}",
         input.decision_id
     ));
+    let mut safe_facts = match input.safe_facts {
+        Value::Object(map) => map,
+        _ => Map::new(),
+    };
+    safe_facts.insert("reducer".to_string(), json!("host-fabric"));
+    safe_facts.insert("sourcePlanRef".to_string(), json!(plan.plan_id));
+    safe_facts.insert("planState".to_string(), json!(plan.state));
 
     let decision = HostFabricControlDecision {
         kind: Some(RECORD_HOST_FABRIC_CONTROL_DECISION.to_string()),
@@ -1116,11 +1125,7 @@ pub fn reduce_host_fabric_control_decision(
         release_refs: normalize_refs(input.release_refs),
         blocked_reasons: blocked_reasons.into_iter().collect(),
         evidence_refs: normalize_refs(evidence_refs),
-        safe_facts: json!({
-            "reducer": "host-fabric",
-            "sourcePlanRef": plan.plan_id,
-            "planState": plan.state
-        }),
+        safe_facts: Value::Object(safe_facts),
         observed_at: input.observed_at,
         expires_at: input.expires_at,
     };
@@ -1737,6 +1742,7 @@ mod tests {
                 release_refs: vec!["release:service-manager:health-check".to_string()],
                 evidence_refs: vec!["evidence:operator:health-check-request".to_string()],
                 blocked_reasons: vec![],
+                safe_facts: json!({ "operation": "healthCheck", "dryRun": true }),
                 observed_at: 1_700_000_001,
                 expires_at: Some(1_700_000_061),
             },
