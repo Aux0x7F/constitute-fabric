@@ -8,19 +8,19 @@ use constitute_protocol::{
     CARRIER_EDGE_NETWORK_LOCAL_NETWORK, CARRIER_EDGE_NETWORK_LOOPBACK, CARRIER_EDGE_NETWORK_NONE,
     CARRIER_EDGE_NETWORK_PROCESS_LOCAL, CARRIER_EDGE_REQUIREMENT_ACTIONABLE,
     CARRIER_EDGE_REQUIREMENT_BLOCKED, CARRIER_EDGE_SELECTION_ACTIONABLE,
-    CARRIER_EDGE_SELECTION_BLOCKED, CARRIER_EDGE_SELECTION_DEGRADED, CarrierEdgeRequirement,
-    CarrierEdgeSelection, ContractTarget, ContractTargetRegistryPosture, ContractTargetSlotPosture,
-    FABRIC_ADAPTER_EXECUTION_BLOCKED, FABRIC_ADAPTER_EXECUTION_FAILED,
-    FABRIC_CONTRACT_TARGET_PLATFORM_FIT_COMPATIBLE, FABRIC_CONTRACT_TARGET_PLATFORM_FIT_UNKNOWN,
-    FABRIC_CONTRACT_TARGET_REGISTRY_BLOCKED, FABRIC_CONTRACT_TARGET_REGISTRY_READY,
-    FABRIC_CONTRACT_TARGET_SLOT_AVAILABLE, FABRIC_CONTRACT_TARGET_SLOT_MISSING,
-    FABRIC_CONTROL_DECISION_BLOCKED, FABRIC_CONTROL_DECISION_DEGRADED,
-    FABRIC_CONTROL_DECISION_EXPIRED, FABRIC_CONTROL_DECISION_READY,
-    FABRIC_FULFILLMENT_PLAN_BLOCKED, FABRIC_FULFILLMENT_PLAN_DEGRADED,
-    FABRIC_FULFILLMENT_PLAN_EXPIRED, FABRIC_FULFILLMENT_PLAN_READY,
-    FABRIC_LIFECYCLE_DEPENDENCY_BLOCKED, FABRIC_LIFECYCLE_DEPENDENCY_DEGRADED,
-    FABRIC_LIFECYCLE_DEPENDENCY_MISSING, FABRIC_LIFECYCLE_PLAN_BLOCKED,
-    FABRIC_LIFECYCLE_PLAN_DEGRADED, FABRIC_LIFECYCLE_PLAN_EXPIRED,
+    CARRIER_EDGE_SELECTION_BLOCKED, CARRIER_EDGE_SELECTION_DEGRADED, CARRIER_EDGE_SESSION_OPEN,
+    CarrierEdgeRequirement, CarrierEdgeSelection, CarrierEdgeSessionEvidence, ContractTarget,
+    ContractTargetRegistryPosture, ContractTargetSlotPosture, FABRIC_ADAPTER_EXECUTION_BLOCKED,
+    FABRIC_ADAPTER_EXECUTION_FAILED, FABRIC_CONTRACT_TARGET_PLATFORM_FIT_COMPATIBLE,
+    FABRIC_CONTRACT_TARGET_PLATFORM_FIT_UNKNOWN, FABRIC_CONTRACT_TARGET_REGISTRY_BLOCKED,
+    FABRIC_CONTRACT_TARGET_REGISTRY_READY, FABRIC_CONTRACT_TARGET_SLOT_AVAILABLE,
+    FABRIC_CONTRACT_TARGET_SLOT_MISSING, FABRIC_CONTROL_DECISION_BLOCKED,
+    FABRIC_CONTROL_DECISION_DEGRADED, FABRIC_CONTROL_DECISION_EXPIRED,
+    FABRIC_CONTROL_DECISION_READY, FABRIC_FULFILLMENT_PLAN_BLOCKED,
+    FABRIC_FULFILLMENT_PLAN_DEGRADED, FABRIC_FULFILLMENT_PLAN_EXPIRED,
+    FABRIC_FULFILLMENT_PLAN_READY, FABRIC_LIFECYCLE_DEPENDENCY_BLOCKED,
+    FABRIC_LIFECYCLE_DEPENDENCY_DEGRADED, FABRIC_LIFECYCLE_DEPENDENCY_MISSING,
+    FABRIC_LIFECYCLE_PLAN_BLOCKED, FABRIC_LIFECYCLE_PLAN_DEGRADED, FABRIC_LIFECYCLE_PLAN_EXPIRED,
     FABRIC_MEMBER_CONTRIBUTION_ACCEPTED, FABRIC_MEMBER_CONTRIBUTION_BLOCKED,
     FABRIC_MEMBER_CONTRIBUTION_CLAIMED, FABRIC_MEMBER_CONTRIBUTION_DEGRADED,
     FABRIC_MEMBER_CONTRIBUTION_EXPIRED, FABRIC_MEMBER_CONTRIBUTION_RELEASED,
@@ -32,10 +32,11 @@ use constitute_protocol::{
     HostFabricAdapterExecutionEvidence, HostFabricControlDecision, HostFabricFulfillmentPlan,
     HostFabricMemberContribution, HostFabricTopologyProjection, HostFabricTopologyRolePosture,
     LifecyclePlanPosture, RECORD_CARRIER_EDGE_REQUIREMENT, RECORD_CARRIER_EDGE_SELECTION,
-    RECORD_CONTRACT_TARGET_REGISTRY_POSTURE, RECORD_HOST_FABRIC_ADAPTER_EXECUTION_EVIDENCE,
-    RECORD_HOST_FABRIC_CONTROL_DECISION, RECORD_HOST_FABRIC_FULFILLMENT_PLAN,
-    RECORD_HOST_FABRIC_MEMBER_CONTRIBUTION, RECORD_HOST_FABRIC_TOPOLOGY_PROJECTION,
-    ResourcePosture, validate_carrier_edge_requirement, validate_carrier_edge_selection,
+    RECORD_CARRIER_EDGE_SESSION_EVIDENCE, RECORD_CONTRACT_TARGET_REGISTRY_POSTURE,
+    RECORD_HOST_FABRIC_ADAPTER_EXECUTION_EVIDENCE, RECORD_HOST_FABRIC_CONTROL_DECISION,
+    RECORD_HOST_FABRIC_FULFILLMENT_PLAN, RECORD_HOST_FABRIC_MEMBER_CONTRIBUTION,
+    RECORD_HOST_FABRIC_TOPOLOGY_PROJECTION, ResourcePosture, validate_carrier_edge_requirement,
+    validate_carrier_edge_selection, validate_carrier_edge_session_evidence,
     validate_contract_target, validate_contract_target_registry_posture,
     validate_host_fabric_adapter_execution_evidence, validate_host_fabric_control_decision,
     validate_host_fabric_fulfillment_plan, validate_host_fabric_member_contribution,
@@ -312,6 +313,29 @@ pub struct CarrierEdgeSelectionReduction {
     pub candidate_adapter_refs: Vec<String>,
     pub selected_adapter_ref: Option<String>,
     pub blocked_reasons: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayWebSocketCarrierSessionEvidenceInput {
+    pub evidence_id: String,
+    pub selection_ref: String,
+    pub edge_session_ref: String,
+    pub participant_ref: String,
+    #[serde(default)]
+    pub peer_ref: Option<String>,
+    pub session_binding_ref: String,
+    #[serde(default)]
+    pub safe_facts: Value,
+    #[serde(default)]
+    pub evidence_refs: Vec<String>,
+    #[serde(default)]
+    pub proof_substrate_refs: Vec<String>,
+    #[serde(default)]
+    pub resource_posture_refs: Vec<String>,
+    pub observed_at: u64,
+    #[serde(default)]
+    pub expires_at: Option<u64>,
 }
 
 pub fn reduce_contract_target_registry_from_fabric(
@@ -687,6 +711,47 @@ pub fn reduce_carrier_edge_selection_from_fabric(
         selected_adapter_ref,
         blocked_reasons,
     })
+}
+
+pub fn build_gateway_websocket_carrier_session_evidence(
+    input: GatewayWebSocketCarrierSessionEvidenceInput,
+) -> Result<CarrierEdgeSessionEvidence> {
+    require_ref(&input.evidence_id, "evidenceId")?;
+    require_ref(&input.selection_ref, "selectionRef")?;
+    require_ref(&input.edge_session_ref, "edgeSessionRef")?;
+    require_ref(&input.participant_ref, "participantRef")?;
+    require_ref(&input.session_binding_ref, "sessionBindingRef")?;
+    if let Some(peer_ref) = &input.peer_ref {
+        require_ref(peer_ref, "peerRef")?;
+    }
+    let evidence = CarrierEdgeSessionEvidence {
+        kind: Some(RECORD_CARRIER_EDGE_SESSION_EVIDENCE.to_string()),
+        evidence_id: input.evidence_id,
+        selection_ref: input.selection_ref,
+        edge_session_ref: input.edge_session_ref,
+        adapter_ref: "adapter:gateway-association:websocket".to_string(),
+        adapter_kind: CARRIER_EDGE_ADAPTER_WEB_SOCKET.to_string(),
+        participant_ref: input.participant_ref,
+        peer_ref: input.peer_ref,
+        session_binding_ref: Some(input.session_binding_ref),
+        network_sensitivity: Some(CARRIER_EDGE_NETWORK_LOCAL_NETWORK.to_string()),
+        state: CARRIER_EDGE_SESSION_OPEN.to_string(),
+        connection_state: Some("connected".to_string()),
+        backpressure_state: Some(CARRIER_EDGE_BACKPRESSURE_CLEAR.to_string()),
+        retry_posture: json!({ "state": "notRequired", "retryAfterMs": null }),
+        reconnect_posture: json!({ "state": "idle", "retryAfterMs": null }),
+        close_posture: json!({ "state": "held", "reason": "" }),
+        release_posture: json!({ "state": "held", "expiresAt": input.expires_at }),
+        safe_facts: input.safe_facts,
+        evidence_refs: normalize_refs(input.evidence_refs),
+        proof_substrate_refs: normalize_refs(input.proof_substrate_refs),
+        resource_posture_refs: normalize_refs(input.resource_posture_refs),
+        blocked_reasons: vec![],
+        observed_at: input.observed_at,
+        expires_at: input.expires_at,
+    };
+    validate_carrier_edge_session_evidence(&evidence)?;
+    Ok(evidence)
 }
 
 fn contribution_outputs_for_role(
@@ -2303,6 +2368,39 @@ mod tests {
             blocked
                 .blocked_reasons
                 .contains(&"carrierEdge:noActionableAdapter".to_string())
+        );
+    }
+
+    #[test]
+    fn builds_gateway_websocket_carrier_session_evidence() {
+        let evidence = build_gateway_websocket_carrier_session_evidence(
+            GatewayWebSocketCarrierSessionEvidenceInput {
+                evidence_id: "evidence:carrier:session:1".to_string(),
+                selection_ref: "carrier-select:gateway-edge:nvr".to_string(),
+                edge_session_ref: "edge-session:1".to_string(),
+                participant_ref: "service:nvr".to_string(),
+                peer_ref: Some("gateway:lab".to_string()),
+                session_binding_ref: "binding:gateway-edge:1".to_string(),
+                safe_facts: json!({ "service": "nvr", "source": "swarmEdgeAccept" }),
+                evidence_refs: vec!["session:1".to_string()],
+                proof_substrate_refs: vec!["proof-substrate:host:lab".to_string()],
+                resource_posture_refs: vec!["resource:network:lab".to_string()],
+                observed_at: 1_700_000_010,
+                expires_at: Some(1_700_000_090),
+            },
+        )
+        .expect("carrier session evidence");
+        assert_eq!(
+            evidence.adapter_ref,
+            "adapter:gateway-association:websocket"
+        );
+        assert_eq!(
+            evidence.network_sensitivity.as_deref(),
+            Some(CARRIER_EDGE_NETWORK_LOCAL_NETWORK)
+        );
+        assert_eq!(
+            evidence.session_binding_ref.as_deref(),
+            Some("binding:gateway-edge:1")
         );
     }
 
