@@ -5,7 +5,7 @@ use constitute_protocol::{
     CARRIER_EDGE_ADAPTER_WORKER, CARRIER_EDGE_BACKPRESSURE_BLOCKED,
     CARRIER_EDGE_BACKPRESSURE_CLEAR, CARRIER_EDGE_BACKPRESSURE_DEGRADED,
     CARRIER_EDGE_NETWORK_EXTERNAL_NETWORK, CARRIER_EDGE_NETWORK_HOST_LOCAL,
-    CARRIER_EDGE_NETWORK_LOCAL_NETWORK, CARRIER_EDGE_NETWORK_LOOPBACK,
+    CARRIER_EDGE_NETWORK_LOCAL_NETWORK, CARRIER_EDGE_NETWORK_LOOPBACK, CARRIER_EDGE_NETWORK_NONE,
     CARRIER_EDGE_NETWORK_PROCESS_LOCAL, CARRIER_EDGE_REQUIREMENT_ACTIONABLE,
     CARRIER_EDGE_REQUIREMENT_BLOCKED, CARRIER_EDGE_SELECTION_ACTIONABLE,
     CARRIER_EDGE_SELECTION_BLOCKED, CARRIER_EDGE_SELECTION_DEGRADED, CarrierEdgeRequirement,
@@ -261,7 +261,15 @@ pub struct CarrierEdgeCandidate {
     #[serde(default)]
     pub contribution_ref: Option<String>,
     #[serde(default)]
+    pub session_binding_ref: Option<String>,
+    #[serde(default)]
+    pub network_sensitivity: Option<String>,
+    #[serde(default)]
     pub evidence_refs: Vec<String>,
+    #[serde(default)]
+    pub proof_substrate_refs: Vec<String>,
+    #[serde(default)]
+    pub resource_posture_refs: Vec<String>,
     #[serde(default)]
     pub blocked_reasons: Vec<String>,
     pub state: String,
@@ -494,6 +502,8 @@ pub fn reduce_carrier_edge_selection_from_fabric(
             .collect(),
     );
     let mut evidence_refs = input.evidence_refs.clone();
+    let mut proof_substrate_refs = Vec::new();
+    let mut resource_posture_refs = Vec::new();
     let mut blocked_reasons = BTreeSet::new();
     let mut fallback_refs = Vec::new();
     let mut selected_candidate: Option<CarrierEdgeCandidate> = None;
@@ -514,7 +524,15 @@ pub fn reduce_carrier_edge_selection_from_fabric(
         ) {
             return Err(anyhow!("unsupported carrier edge candidate adapterKind"));
         }
+        if let Some(session_binding_ref) = &candidate.session_binding_ref {
+            require_ref(session_binding_ref, "candidate sessionBindingRef")?;
+        }
+        if let Some(network_sensitivity) = &candidate.network_sensitivity {
+            validate_carrier_edge_network_sensitivity(network_sensitivity)?;
+        }
         evidence_refs.extend(candidate.evidence_refs.clone());
+        proof_substrate_refs.extend(candidate.proof_substrate_refs.clone());
+        resource_posture_refs.extend(candidate.resource_posture_refs.clone());
         match candidate.state.as_str() {
             "actionable" => {
                 if selected_candidate.is_none() {
@@ -567,6 +585,8 @@ pub fn reduce_carrier_edge_selection_from_fabric(
     };
     let blocked_reasons = normalize_refs(blocked_reasons.into_iter().collect());
     let evidence_refs = normalize_refs(evidence_refs);
+    let proof_substrate_refs = normalize_refs(proof_substrate_refs);
+    let resource_posture_refs = normalize_refs(resource_posture_refs);
     let selected_adapter_ref = selected
         .as_ref()
         .map(|candidate| candidate.adapter_ref.clone());
@@ -579,8 +599,22 @@ pub fn reduce_carrier_edge_selection_from_fabric(
                 .cloned()
                 .unwrap_or_else(|| CARRIER_EDGE_ADAPTER_WEB_SOCKET.to_string())
         });
-    let network_sensitivity = carrier_edge_network_sensitivity(&selected_adapter_kind).to_string();
-    let session_binding_ref = format!("carrier-binding:{}", input.selection_id);
+    let network_sensitivity = selected
+        .as_ref()
+        .and_then(|candidate| candidate.network_sensitivity.clone())
+        .unwrap_or_else(|| carrier_edge_network_sensitivity(&selected_adapter_kind).to_string());
+    let session_binding_ref = selected
+        .as_ref()
+        .and_then(|candidate| candidate.session_binding_ref.clone())
+        .unwrap_or_else(|| format!("carrier-binding:{}", input.selection_id));
+    let selected_proof_substrate_refs = selected
+        .as_ref()
+        .map(|candidate| normalize_refs(candidate.proof_substrate_refs.clone()))
+        .unwrap_or_default();
+    let selected_resource_posture_refs = selected
+        .as_ref()
+        .map(|candidate| normalize_refs(candidate.resource_posture_refs.clone()))
+        .unwrap_or_default();
 
     let requirement = CarrierEdgeRequirement {
         kind: Some(RECORD_CARRIER_EDGE_REQUIREMENT.to_string()),
@@ -610,8 +644,8 @@ pub fn reduce_carrier_edge_selection_from_fabric(
             "selectedAdapterKind": selected_adapter_kind
         }),
         evidence_refs: evidence_refs.clone(),
-        proof_substrate_refs: vec![],
-        resource_posture_refs: vec![],
+        proof_substrate_refs,
+        resource_posture_refs,
         blocked_reasons: blocked_reasons.clone(),
         issued_at: input.observed_at,
         expires_at: input.expires_at,
@@ -638,8 +672,8 @@ pub fn reduce_carrier_edge_selection_from_fabric(
             "candidateCount": candidate_adapter_refs.len()
         }),
         evidence_refs,
-        proof_substrate_refs: vec![],
-        resource_posture_refs: vec![],
+        proof_substrate_refs: selected_proof_substrate_refs,
+        resource_posture_refs: selected_resource_posture_refs,
         blocked_reasons: blocked_reasons.clone(),
         observed_at: input.observed_at,
         expires_at: input.expires_at,
@@ -1520,6 +1554,24 @@ fn carrier_edge_network_sensitivity(adapter_kind: &str) -> &'static str {
     }
 }
 
+fn validate_carrier_edge_network_sensitivity(value: &str) -> Result<()> {
+    if matches!(
+        value,
+        CARRIER_EDGE_NETWORK_NONE
+            | CARRIER_EDGE_NETWORK_PROCESS_LOCAL
+            | CARRIER_EDGE_NETWORK_HOST_LOCAL
+            | CARRIER_EDGE_NETWORK_LOOPBACK
+            | CARRIER_EDGE_NETWORK_LOCAL_NETWORK
+            | CARRIER_EDGE_NETWORK_EXTERNAL_NETWORK
+    ) {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "unsupported carrier edge candidate networkSensitivity"
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2145,7 +2197,11 @@ mod tests {
                     adapter_ref: "adapter:gateway:websocket".to_string(),
                     adapter_kind: CARRIER_EDGE_ADAPTER_WEB_SOCKET.to_string(),
                     contribution_ref: Some("fabric-contribution:gateway-association".to_string()),
+                    session_binding_ref: Some("binding:gateway:websocket".to_string()),
+                    network_sensitivity: Some(CARRIER_EDGE_NETWORK_LOCAL_NETWORK.to_string()),
                     evidence_refs: vec!["evidence:gateway:websocket:ready".to_string()],
+                    proof_substrate_refs: vec!["proof-substrate:firewall:websocket".to_string()],
+                    resource_posture_refs: vec!["resource:network:websocket".to_string()],
                     blocked_reasons: vec![],
                     state: "actionable".to_string(),
                     priority: 10,
@@ -2154,7 +2210,11 @@ mod tests {
                     adapter_ref: "adapter:gateway:quic".to_string(),
                     adapter_kind: CARRIER_EDGE_ADAPTER_QUIC.to_string(),
                     contribution_ref: Some("fabric-contribution:gateway-association".to_string()),
+                    session_binding_ref: Some("binding:gateway:quic".to_string()),
+                    network_sensitivity: Some(CARRIER_EDGE_NETWORK_LOCAL_NETWORK.to_string()),
                     evidence_refs: vec!["evidence:gateway:quic:degraded".to_string()],
+                    proof_substrate_refs: vec!["proof-substrate:firewall:quic".to_string()],
+                    resource_posture_refs: vec!["resource:network:quic".to_string()],
                     blocked_reasons: vec!["carrierEdge:firewall:quic".to_string()],
                     state: "degraded".to_string(),
                     priority: 20,
@@ -2179,6 +2239,24 @@ mod tests {
             Some("adapter:gateway:websocket")
         );
         assert_eq!(reduction.selection.state, CARRIER_EDGE_SELECTION_ACTIONABLE);
+        assert_eq!(
+            reduction.selection.session_binding_ref.as_deref(),
+            Some("binding:gateway:websocket")
+        );
+        assert_eq!(
+            reduction.selection.network_sensitivity.as_deref(),
+            Some(CARRIER_EDGE_NETWORK_LOCAL_NETWORK)
+        );
+        assert_eq!(
+            reduction.selection.proof_substrate_refs,
+            vec!["proof-substrate:firewall:websocket".to_string()]
+        );
+        assert!(
+            reduction
+                .requirement
+                .proof_substrate_refs
+                .contains(&"proof-substrate:firewall:quic".to_string())
+        );
         assert_eq!(
             reduction.selection.backpressure_state.as_deref(),
             Some(CARRIER_EDGE_BACKPRESSURE_CLEAR)
@@ -2206,7 +2284,11 @@ mod tests {
                 adapter_ref: "adapter:gateway:websocket".to_string(),
                 adapter_kind: CARRIER_EDGE_ADAPTER_WEB_SOCKET.to_string(),
                 contribution_ref: None,
+                session_binding_ref: None,
+                network_sensitivity: None,
                 evidence_refs: vec![],
+                proof_substrate_refs: vec![],
+                resource_posture_refs: vec![],
                 blocked_reasons: vec!["carrierEdge:gatewayUnavailable".to_string()],
                 state: "blocked".to_string(),
                 priority: 10,
