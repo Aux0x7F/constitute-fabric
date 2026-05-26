@@ -25,22 +25,23 @@ use constitute_protocol::{
     FABRIC_MEMBER_CONTRIBUTION_CLAIMED, FABRIC_MEMBER_CONTRIBUTION_DEGRADED,
     FABRIC_MEMBER_CONTRIBUTION_EXPIRED, FABRIC_MEMBER_CONTRIBUTION_RELEASED,
     FABRIC_MEMBER_CONTRIBUTION_RUNNING, FABRIC_MEMBER_CONTRIBUTION_SUPERSEDED,
-    FABRIC_MEMBER_ROLE_DOMAIN_SERVICE, FABRIC_MEMBER_ROLE_GATEWAY_ASSOCIATION,
-    FABRIC_MEMBER_ROLE_PLATFORM_ADAPTER, FABRIC_MEMBER_ROLE_RUNTIME,
-    FABRIC_MEMBER_ROLE_SERVICE_EDGE_ADAPTER, FABRIC_TOPOLOGY_ROLE_BLOCKED,
-    FABRIC_TOPOLOGY_ROLE_DEGRADED, FABRIC_TOPOLOGY_ROLE_MISSING, FABRIC_TOPOLOGY_ROLE_READY,
-    HostFabricAdapterExecutionEvidence, HostFabricControlDecision, HostFabricFulfillmentPlan,
-    HostFabricMemberContribution, HostFabricTopologyProjection, HostFabricTopologyRolePosture,
-    LifecyclePlanPosture, RECORD_CARRIER_EDGE_REQUIREMENT, RECORD_CARRIER_EDGE_SELECTION,
-    RECORD_CARRIER_EDGE_SESSION_EVIDENCE, RECORD_CONTRACT_TARGET_REGISTRY_POSTURE,
-    RECORD_HOST_FABRIC_ADAPTER_EXECUTION_EVIDENCE, RECORD_HOST_FABRIC_CONTROL_DECISION,
-    RECORD_HOST_FABRIC_FULFILLMENT_PLAN, RECORD_HOST_FABRIC_MEMBER_CONTRIBUTION,
-    RECORD_HOST_FABRIC_TOPOLOGY_PROJECTION, ResourcePosture, validate_carrier_edge_requirement,
-    validate_carrier_edge_selection, validate_carrier_edge_session_evidence,
-    validate_contract_target, validate_contract_target_registry_posture,
-    validate_host_fabric_adapter_execution_evidence, validate_host_fabric_control_decision,
-    validate_host_fabric_fulfillment_plan, validate_host_fabric_member_contribution,
-    validate_host_fabric_topology_projection, validate_lifecycle_plan_posture,
+    FABRIC_MEMBER_ROLE_DOMAIN_SERVICE, FABRIC_MEMBER_ROLE_EXECUTION_FULFILLMENT,
+    FABRIC_MEMBER_ROLE_GATEWAY_ASSOCIATION, FABRIC_MEMBER_ROLE_PLATFORM_ADAPTER,
+    FABRIC_MEMBER_ROLE_RUNTIME, FABRIC_MEMBER_ROLE_SERVICE_EDGE_ADAPTER,
+    FABRIC_TOPOLOGY_ROLE_BLOCKED, FABRIC_TOPOLOGY_ROLE_DEGRADED, FABRIC_TOPOLOGY_ROLE_MISSING,
+    FABRIC_TOPOLOGY_ROLE_READY, HostFabricAdapterExecutionEvidence, HostFabricControlDecision,
+    HostFabricFulfillmentPlan, HostFabricMemberContribution, HostFabricTopologyProjection,
+    HostFabricTopologyRolePosture, LifecyclePlanPosture, RECORD_CARRIER_EDGE_REQUIREMENT,
+    RECORD_CARRIER_EDGE_SELECTION, RECORD_CARRIER_EDGE_SESSION_EVIDENCE,
+    RECORD_CONTRACT_TARGET_REGISTRY_POSTURE, RECORD_HOST_FABRIC_ADAPTER_EXECUTION_EVIDENCE,
+    RECORD_HOST_FABRIC_CONTROL_DECISION, RECORD_HOST_FABRIC_FULFILLMENT_PLAN,
+    RECORD_HOST_FABRIC_MEMBER_CONTRIBUTION, RECORD_HOST_FABRIC_TOPOLOGY_PROJECTION,
+    ResourcePosture, validate_carrier_edge_requirement, validate_carrier_edge_selection,
+    validate_carrier_edge_session_evidence, validate_contract_target,
+    validate_contract_target_registry_posture, validate_host_fabric_adapter_execution_evidence,
+    validate_host_fabric_control_decision, validate_host_fabric_fulfillment_plan,
+    validate_host_fabric_member_contribution, validate_host_fabric_topology_projection,
+    validate_lifecycle_plan_posture,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -350,6 +351,10 @@ pub fn reduce_contract_target_registry_from_fabric(
         (
             "slot:service-edge-adapter",
             FABRIC_MEMBER_ROLE_SERVICE_EDGE_ADAPTER,
+        ),
+        (
+            "slot:execution-fulfillment",
+            FABRIC_MEMBER_ROLE_EXECUTION_FULFILLMENT,
         ),
         ("slot:platform-adapter", FABRIC_MEMBER_ROLE_PLATFORM_ADAPTER),
         ("slot:runtime", FABRIC_MEMBER_ROLE_RUNTIME),
@@ -803,6 +808,7 @@ fn role_ref_for_slot(slot_ref: &str) -> String {
     match slot_ref {
         "slot:gateway-association" => role_ref(FABRIC_MEMBER_ROLE_GATEWAY_ASSOCIATION),
         "slot:service-edge-adapter" => role_ref(FABRIC_MEMBER_ROLE_SERVICE_EDGE_ADAPTER),
+        "slot:execution-fulfillment" => role_ref(FABRIC_MEMBER_ROLE_EXECUTION_FULFILLMENT),
         "slot:platform-adapter" => role_ref(FABRIC_MEMBER_ROLE_PLATFORM_ADAPTER),
         "slot:runtime" => role_ref(FABRIC_MEMBER_ROLE_RUNTIME),
         "slot:nvr-service" => role_ref(FABRIC_MEMBER_ROLE_DOMAIN_SERVICE),
@@ -2026,6 +2032,7 @@ mod tests {
         let roles = [
             FABRIC_MEMBER_ROLE_GATEWAY_ASSOCIATION,
             FABRIC_MEMBER_ROLE_HOST_SERVICE_ADAPTER,
+            FABRIC_MEMBER_ROLE_EXECUTION_FULFILLMENT,
             FABRIC_MEMBER_ROLE_BUILD_PROCESSOR,
             FABRIC_MEMBER_ROLE_RUNTIME,
             FABRIC_MEMBER_ROLE_SURFACE,
@@ -2178,6 +2185,11 @@ mod tests {
                         ],
                     ),
                     contribution_for_role_with_outputs(
+                        "fabric-contribution:execution-fulfillment:runner",
+                        FABRIC_MEMBER_ROLE_EXECUTION_FULFILLMENT,
+                        vec!["fulfillment:runner:native-module-load"],
+                    ),
+                    contribution_for_role_with_outputs(
                         "fabric-contribution:platform-adapter:browser-webrtc",
                         FABRIC_MEMBER_ROLE_PLATFORM_ADAPTER,
                         vec!["fulfillment:platform-adapter:browser-webrtc"],
@@ -2234,6 +2246,11 @@ mod tests {
                 .iter()
                 .all(|slot| slot.safe_facts.get("serviceIdentityMutation").is_none())
         );
+        assert!(reduction.registry.slot_postures.iter().any(|slot| {
+            slot.slot_ref == "slot:execution-fulfillment"
+                && slot.selected_fulfillment_ref.as_deref()
+                    == Some("fulfillment:runner:native-module-load")
+        }));
         assert!(
             reduction
                 .fulfillment_plan
